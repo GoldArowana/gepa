@@ -1,0 +1,79 @@
+name: GEPA candidate presubmit 861e712
+run-name: Presubmit for candidate 861e712 (isolated fork CI)
+
+on:
+  push:
+    branches:
+      - codex-ci/checkpoint-schema-20261103-861e712
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-presubmit:
+    if: >-
+      github.repository == 'GoldArowana/gepa' &&
+      github.ref == 'refs/heads/codex-ci/checkpoint-schema-20261103-861e712'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPECTED_CANDIDATE: 861e712fe8f3a7bef06d2e0d2282db9de1656e93
+      UV_NO_CACHE: '1'
+      PRE_COMMIT_HOME: ${{ runner.temp }}/gepa-precommit-861e712
+    steps:
+      - name: Check out the reviewed candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, upstream pin
+        with:
+          ref: 861e712fe8f3a7bef06d2e0d2282db9de1656e93
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify the exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_head=$(git rev-parse HEAD)
+          printf 'tested_candidate_head=%s\n' "$actual_head"
+          test "$actual_head" = "$EXPECTED_CANDIDATE"
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0, upstream pin
+        with:
+          python-version: '3.11'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0, upstream pin
+        with:
+          enable-cache: false
+      - name: Install the locked development dependencies
+        id: dependencies
+        run: uv sync --locked --extra dev --python 3.11
+      - name: Run the pinned applicable pre-commit hooks
+        id: precommit
+        run: uv run --no-sync pre-commit run --files src/gepa/core/state.py tests/test_state.py --show-diff-on-failure
+      # A hook may modify tracked files and fail. Preserve that failed outcome;
+      # restore only this disposable runner's tracked tree before type checking
+      # so Pyright still checks the reviewed candidate, not a hook-modified diff.
+      - name: Type check the exact candidate
+        id: pyright
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore --source "$EXPECTED_CANDIDATE" --staged --worktree -- .
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CANDIDATE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          printf 'typechecked_candidate_head=%s\n' "$(git rev-parse HEAD)"
+          uv run --no-sync pyright
+      - name: Record candidate and check outcomes
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            printf 'Candidate: `%s`\n\n' "$EXPECTED_CANDIDATE"
+            printf 'Workflow event commit: `%s`\n\n' '${{ github.sha }}'
+            printf 'Dependencies: %s\n\n' '${{ steps.dependencies.outcome }}'
+            printf 'Pinned pre-commit: %s\n\n' '${{ steps.precommit.outcome }}'
+            printf 'Pyright: %s\n' '${{ steps.pyright.outcome }}'
+          } >> "$GITHUB_STEP_SUMMARY"
+

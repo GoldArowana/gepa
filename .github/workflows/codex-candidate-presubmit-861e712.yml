@@ -19,7 +19,7 @@ jobs:
     env:
       EXPECTED_CANDIDATE: 861e712fe8f3a7bef06d2e0d2282db9de1656e93
       UV_NO_CACHE: '1'
-      PRE_COMMIT_HOME: ${{ runner.temp }}/gepa-precommit-861e712
+      PRE_COMMIT_HOME: /tmp/gepa-precommit-861e712
     steps:
       - name: Check out the reviewed candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, upstream pin

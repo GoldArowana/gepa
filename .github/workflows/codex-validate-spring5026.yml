@@ -1,0 +1,99 @@
+name: Validate Spring 5026 Maven Java 17
+on:
+  push:
+    branches:
+      - codex-ci/spring5026-maven17-20261105-a1ea9098
+permissions:
+  contents: read
+jobs:
+  selected-normal-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out the exact published Spring source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: GoldArowana/spring-ai-alibaba
+          ref: a1ea909880ffd4172dd6f24a543b75760f107a2f
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Assert source binding before execution
+        id: source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = a1ea909880ffd4172dd6f24a543b75760f107a2f
+          test "$(git rev-parse 'HEAD^{tree}')" = 65d6323f182dbd114c509247ed0d991b005339ae
+          git diff --exit-code
+          printf 'Spring source=%s tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up the real Java 17 runtime
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Record Java and Maven versions
+        shell: bash
+        run: |
+          java -version
+          ./mvnw --version
+          test "$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p')" = 17
+      - name: Official reactor compilation and four safe JUnit classes
+        id: maven
+        shell: bash
+        run: |
+          ./mvnw -B -ntp -pl :spring-ai-alibaba-graph-core -am \
+            -Dspotless.apply.skip=true -Dmaven.sorter.skip=true \
+            -Dtest=UserMessageMediaSerializationTest,UserMessageMediaReadConstraintsTest,FileSystemSaverSerializationFailureTest,FileSystemSaverCacheTest \
+            -Dsurefire.failIfNoSpecifiedTests=false test
+      - name: Read-only Spotless verification
+        if: ${{ always() && steps.source.outcome == 'success' }}
+        shell: bash
+        run: |
+          ./mvnw -B -ntp -pl :spring-ai-alibaba-graph-core -am \
+            -Dspotless.apply.skip=true -Dspotless.check.skip=false -Dmaven.sorter.skip=true \
+            com.diffplug.spotless:spotless-maven-plugin:2.44.5:check
+      - name: Read-only POM ordering verification
+        if: ${{ always() && steps.source.outcome == 'success' }}
+        shell: bash
+        run: |
+          ./mvnw -B -ntp -pl :spring-ai-alibaba-graph-core -am \
+            -Dspotless.apply.skip=true -Dmaven.sorter.skip=false -Dmaven.sorter.verifyFail=stop \
+            io.github.tonycody.maven.plugins:sorter-maven-plugin:1.0.1:check
+      - name: Verify exact Surefire scope and results
+        if: ${{ always() && steps.source.outcome == 'success' }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import xml.etree.ElementTree as ET
+          wanted = {
+              'com.alibaba.cloud.ai.graph.plain_text.UserMessageMediaSerializationTest',
+              'com.alibaba.cloud.ai.graph.plain_text.UserMessageMediaReadConstraintsTest',
+              'com.alibaba.cloud.ai.graph.checkpoint.savers.file.FileSystemSaverSerializationFailureTest',
+              'com.alibaba.cloud.ai.graph.checkpoint.savers.file.FileSystemSaverCacheTest',
+          }
+          seen = set()
+          counts = dict(tests=0, failures=0, errors=0, skipped=0)
+          for file in sorted(Path('spring-ai-alibaba-graph-core/target/surefire-reports').glob('TEST-*.xml')):
+              suite = ET.parse(file).getroot()
+              name = suite.attrib['name']
+              assert name in wanted, ('unexpected executed class', name)
+              assert name not in seen, ('duplicate report', name)
+              seen.add(name)
+              row = {key: int(suite.attrib.get(key, '0')) for key in counts}
+              assert row['tests'] > 0
+              for key in counts:
+                  counts[key] += row[key]
+              print(json.dumps(dict(name=name, **row), sort_keys=True))
+          print('Selected Surefire totals:', json.dumps(counts, sort_keys=True))
+          assert seen == wanted, ('missing reports', sorted(wanted - seen))
+          assert counts['failures'] == counts['errors'] == counts['skipped'] == 0, counts
+          PY
+      - name: Confirm tracked source remained unchanged
+        if: ${{ always() && steps.source.outcome == 'success' }}
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = a1ea909880ffd4172dd6f24a543b75760f107a2f
+          test "$(git rev-parse 'HEAD^{tree}')" = 65d6323f182dbd114c509247ed0d991b005339ae
+          git diff --exit-code
+          git diff --cached --exit-code

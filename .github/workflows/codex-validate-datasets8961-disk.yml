@@ -1,0 +1,118 @@
+name: Validate Datasets uint64 disk round trips
+on:
+  push:
+    branches:
+      - codex-ci/datasets8961-disk-20261106-ea80d04
+permissions:
+  contents: read
+jobs:
+  scalar-disk-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      HF_DATASETS_OFFLINE: '1'
+      HF_HUB_OFFLINE: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      RUN_REMOTE: '0'
+      RUN_SLOW: '0'
+      PIP_NO_CACHE_DIR: '1'
+    steps:
+      - name: Check out the exact source candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: GoldArowana/datasets
+          ref: ea80d04730d2db191550f86314cee41766b74769
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Assert source commit and tree
+        run: |
+          test "$(git rev-parse HEAD)" = ea80d04730d2db191550f86314cee41766b74769
+          test "$(git rev-parse 'HEAD^{tree}')" = 387bf08b3136188db28221e0e1113fed2ba61bce
+          git diff HEAD --exit-code
+          git show -s --format='SOURCE commit=%H tree=%T parents=%P'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install package and selected-test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-cache-dir -e . pytest absl-py pytest-datadir pytest-xdist aiohttp decorator ruff
+          python - <<'PY'
+          import importlib.metadata as metadata
+          from pathlib import Path
+          import sys
+          import datasets
+          assert Path(datasets.__file__).resolve().is_relative_to(Path.cwd() / 'src')
+          print('Python', sys.version)
+          print('Datasets source', Path(datasets.__file__).resolve())
+          for package in ('pyarrow', 'numpy', 'pandas', 'huggingface-hub', 'pytest', 'ruff'):
+              print(package, metadata.version(package))
+          PY
+          git diff HEAD --exit-code
+      - name: Reproduce both new cases with the parent production implementation
+        shell: bash
+        run: |
+          git fetch --no-tags --depth=1 origin 5945009f26c923c2fd1cc9c600d48a05e1eae7a7
+          trap 'git restore --source=HEAD -- src/datasets/arrow_dataset.py' EXIT
+          git show 5945009f26c923c2fd1cc9c600d48a05e1eae7a7:src/datasets/arrow_dataset.py > src/datasets/arrow_dataset.py
+          test "$(git hash-object src/datasets/arrow_dataset.py)" = "$(git rev-parse 5945009f26c923c2fd1cc9c600d48a05e1eae7a7:src/datasets/arrow_dataset.py)"
+          printf 'PARENT_PRODUCTION_BLOB=%s\n' "$(git hash-object src/datasets/arrow_dataset.py)"
+          set +e
+          python -m pytest -q -p no:cacheprovider tests/test_add_item_uint64.py -k reordered_disk_roundtrip --junitxml="$RUNNER_TEMP/parent-disk.xml"
+          result=$?
+          set -e
+          test "$result" = 1
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'parent-disk.xml').getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root.findall('testsuite'))
+          counts = {key: sum(int(suite.attrib.get(key, 0)) for suite in suites) for key in ('tests', 'failures', 'errors', 'skipped')}
+          cases = [case for suite in suites for case in suite.findall('testcase')]
+          assert counts == dict(tests=2, failures=2, errors=0, skipped=0), counts
+          assert len(cases) == 2
+          for case in cases:
+              failure = case.find('failure')
+              assert failure is not None and 'OverflowError' in (failure.text or ''), case.attrib
+              assert 'reordered_disk_roundtrip' in case.attrib['name']
+          print('PARENT_EXPECTED_OVERFLOW_FAILURES', counts)
+          PY
+          git restore --source=HEAD -- src/datasets/arrow_dataset.py
+          git diff HEAD --exit-code
+      - name: All dedicated uint64 regressions on the exact candidate
+        run: |
+          python -m pytest -q -p no:cacheprovider tests/test_add_item_uint64.py --junitxml="$RUNNER_TEMP/candidate-uint64.xml"
+      - name: Existing add_item and adjacent add_column regressions
+        run: |
+          python -m pytest -q -p no:cacheprovider tests/test_arrow_dataset.py -k 'add_item or add_column' --junitxml="$RUNNER_TEMP/candidate-adjacent.xml"
+      - name: Assert actual selected test totals
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          total = 0
+          for name, expected in [('candidate-uint64.xml', 17), ('candidate-adjacent.xml', 65)]:
+              root = ET.parse(Path(os.environ['RUNNER_TEMP']) / name).getroot()
+              suites = [root] if root.tag == 'testsuite' else list(root.findall('testsuite'))
+              counts = {key: sum(int(suite.attrib.get(key, 0)) for suite in suites) for key in ('tests', 'failures', 'errors', 'skipped')}
+              print(name, json.dumps(counts, sort_keys=True))
+              assert counts == dict(tests=expected, failures=0, errors=0, skipped=0), counts
+              total += counts['tests']
+          assert total == 82, total
+          print('CANDIDATE_SELECTED_TESTS_PASSED', total)
+          PY
+      - name: Check formatting and lint of the changed test module
+        run: |
+          python -m ruff check --no-cache tests/test_add_item_uint64.py
+          python -m ruff format --check --no-cache tests/test_add_item_uint64.py
+          git diff --check
+      - name: Prove candidate tracked source remained unchanged
+        if: always()
+        run: |
+          test "$(git rev-parse HEAD)" = ea80d04730d2db191550f86314cee41766b74769
+          test "$(git rev-parse 'HEAD^{tree}')" = 387bf08b3136188db28221e0e1113fed2ba61bce
+          git diff HEAD --exit-code
+          git diff --cached --exit-code
+          echo CANDIDATE_SOURCE_UNCHANGED

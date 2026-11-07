@@ -1,5 +1,5 @@
 name: GEPA custom proposer budget presubmit
-run-name: GEPA proposer budget candidate 16d6748
+run-name: GEPA proposer budget candidate e18ec16
 
 on:
   push:
@@ -17,8 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      EXPECTED_HEAD: 16d6748c870d9ad92a3a82de6880fbf674fa6394
-      EXPECTED_TREE: d031e7b94a59d6f20da6399aa1cf8c82210f27e8
+      EXPECTED_HEAD: e18ec16ef1da94dc71100a6777559ad0335c580d
+      EXPECTED_TREE: 756c88514c3ccaccda6dba430d03bec1c190287d
       UV_NO_CACHE: '1'
       PRE_COMMIT_HOME: /tmp/gepa-proposer-budget-precommit
     steps:
@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: GoldArowana/gepa
-          ref: 16d6748c870d9ad92a3a82de6880fbf674fa6394
+          ref: e18ec16ef1da94dc71100a6777559ad0335c580d
           fetch-depth: 1
           persist-credentials: false
       - name: Assert source repository and exact candidate
@@ -34,7 +34,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = 'GoldArowana/gepa'
-          test "$(git remote get-url origin)" = 'https://github.com/GoldArowana/gepa'
+          source_url=$(git remote get-url origin)
+          test "${source_url%.git}" = 'https://github.com/GoldArowana/gepa'
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
           git diff HEAD --exit-code

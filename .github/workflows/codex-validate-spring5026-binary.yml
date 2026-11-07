@@ -1,0 +1,161 @@
+name: Validate Spring binary conversion
+on:
+  push:
+    branches:
+      - codex-ci/spring5026-binary-20261107-6194e1d
+permissions:
+  contents: read
+jobs:
+  normal-saver-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        java: ['17', '21']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: GoldArowana/spring-ai-alibaba
+          ref: 6194e1d8ad00d5608e628e23ecbdaddc209cabed
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Assert exact candidate
+        id: source
+        run: |
+          test "$(git rev-parse HEAD)" = 6194e1d8ad00d5608e628e23ecbdaddc209cabed
+          test "$(git rev-parse 'HEAD^{tree}')" = f21245312f67afff7dbaf790f19e1b0473ff65ac
+          git diff HEAD --exit-code
+          git show -s --format='CANDIDATE source=%H tree=%T'
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Record actual runtime
+        run: |
+          java -version
+          ./mvnw --version
+          test "$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p')" = '${{ matrix.java }}'
+      - name: Candidate real Maven five safe classes
+        id: candidate
+        run: |
+          ./mvnw -B -ntp -pl :spring-ai-alibaba-graph-core -am \
+            -Dspotless.apply.skip=true -Dmaven.sorter.skip=true \
+            -Dtest=UserMessageMediaSerializationTest,UserMessageMediaReadConstraintsTest,FileSystemSaverSerializationFailureTest,FileSystemSaverCacheTest,FileSystemSaverScratchReopenTest \
+            -Dsurefire.failIfNoSpecifiedTests=false test
+      - name: Verify actual candidate counts and source
+        run: |
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          expected = {'UserMessageMediaSerializationTest': 44, 'UserMessageMediaReadConstraintsTest': 35,
+                      'FileSystemSaverSerializationFailureTest': 7, 'FileSystemSaverCacheTest': 5,
+                      'FileSystemSaverScratchReopenTest': 13}
+          seen = {}
+          jackson_jars = set()
+          for file in Path('spring-ai-alibaba-graph-core/target/surefire-reports').glob('TEST-*.xml'):
+              suite = ET.parse(file).getroot()
+              name = suite.attrib['name'].rsplit('.', 1)[-1]
+              assert name in expected and name not in seen, name
+              row = {key: int(suite.attrib.get(key, '0')) for key in ('tests', 'failures', 'errors', 'skipped')}
+              print('CANDIDATE_SUITE', name, row)
+              assert row == dict(tests=expected[name], failures=0, errors=0, skipped=0), (name, row)
+              seen[name] = row
+              for prop in suite.findall('properties/property'):
+                  if prop.attrib.get('name') in ('java.class.path', 'surefire.test.class.path'):
+                      jackson_jars.update(Path(item).name for item in prop.attrib.get('value', '').split(':') if 'jackson-' in Path(item).name and item.endswith('.jar'))
+          assert set(seen) == set(expected)
+          print('ACTUAL_JACKSON_CLASSPATH', sorted(jackson_jars))
+          assert any(name.startswith('jackson-databind-') for name in jackson_jars)
+          print('CANDIDATE_TOTAL_PASSED', sum(row['tests'] for row in seen.values()))
+          PYTEST
+          git diff HEAD --exit-code
+          echo CANDIDATE_SOURCE_UNCHANGED_AFTER_TESTS
+      - name: Read-only Spotless and POM verification
+        run: |
+          ./mvnw -B -ntp -pl :spring-ai-alibaba-graph-core -am \
+            -Dspotless.apply.skip=true -Dspotless.check.skip=false -Dmaven.sorter.skip=true \
+            com.diffplug.spotless:spotless-maven-plugin:2.44.5:check
+          ./mvnw -B -ntp -pl :spring-ai-alibaba-graph-core -am \
+            -Dspotless.apply.skip=true -Dmaven.sorter.skip=false -Dmaven.sorter.verifyFail=stop \
+            io.github.tonycody.maven.plugins:sorter-maven-plugin:1.0.1:check
+          git diff HEAD --exit-code
+      - name: Exact published handler base control with normal conversion tests
+        id: control
+        run: |
+          echo BASE_HANDLER_CONTROL_START
+          git fetch --no-tags --depth=1 origin c18485ff9084ad67b276ff6f171abc06fe82f05a
+          git show c18485ff9084ad67b276ff6f171abc06fe82f05a:spring-ai-alibaba-graph-core/src/main/java/com/alibaba/cloud/ai/graph/serializer/plain_text/jackson/UserMessageHandler.java > spring-ai-alibaba-graph-core/src/main/java/com/alibaba/cloud/ai/graph/serializer/plain_text/jackson/UserMessageHandler.java
+          python3 - <<'CONTROL'
+          from pathlib import Path
+          import hashlib
+          raw = Path('spring-ai-alibaba-graph-core/src/main/java/com/alibaba/cloud/ai/graph/serializer/plain_text/jackson/UserMessageHandler.java').read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == '2230e2d322653e2327c2d097d779025db4a4db9ef641332a3cdcdaea0700a920'
+          CONTROL
+          set +e
+          ./mvnw -B -ntp -pl :spring-ai-alibaba-graph-core -am \
+            -Dspotless.apply.skip=true -Dmaven.sorter.skip=true \
+            -Dtest=UserMessageMediaSerializationTest -Dsurefire.failIfNoSpecifiedTests=false test
+          control_exit=$?
+          set -e
+          test "$control_exit" = 1
+          python3 - <<'CONTROLRESULT'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          suite = ET.parse('spring-ai-alibaba-graph-core/target/surefire-reports/TEST-com.alibaba.cloud.ai.graph.plain_text.UserMessageMediaSerializationTest.xml').getroot()
+          counts = {key: int(suite.attrib.get(key, '0')) for key in ('tests', 'failures', 'errors', 'skipped')}
+          print('BASE_HANDLER_CONTROL_COUNTS', counts)
+          assert counts['tests'] == 44 and counts['failures'] + counts['errors'] == 5 and counts['skipped'] == 0, counts
+          broken = []
+          for case in suite.findall('testcase'):
+              problem = case.find('failure')
+              if problem is None:
+                  problem = case.find('error')
+              if problem is not None:
+                  assert case.attrib['name'].startswith(('shouldRetainBinaryMediaDuringInMemoryConversion', 'shouldKeepBinaryReadBudgetDuringInMemoryConversion', 'shouldHonorReaderBudgetForNativeBinaryTrees')), case.attrib['name']
+                  assert 'User message media data must be a string' in ET.tostring(problem, encoding='unicode')
+                  broken.append(case.attrib['name'])
+          assert len(broken) == 5, broken
+          print('BASE_HANDLER_CONTROL_EXPECTED_CONVERSION_FAILURES_VERIFIED', broken)
+          CONTROLRESULT
+      - name: Uncommitted v1 native-budget regression control
+        if: ${{ steps.control.outcome == 'success' }}
+        run: |
+          echo DRAFT_V1_NATIVE_READ_CONTROL_START
+          python3 - <<'DRAFT'
+          from pathlib import Path
+          import base64
+          import hashlib
+          raw = base64.b64decode('LyoKICogQ29weXJpZ2h0IDIwMjQtMjAyNiB0aGUgb3JpZ2luYWwgYXV0aG9yIG9yIGF1dGhvcnMuCiAqCiAqIExpY2Vuc2VkIHVuZGVyIHRoZSBBcGFjaGUgTGljZW5zZSwgVmVyc2lvbiAyLjAgKHRoZSAiTGljZW5zZSIpOwogKiB5b3UgbWF5IG5vdCB1c2UgdGhpcyBmaWxlIGV4Y2VwdCBpbiBjb21wbGlhbmNlIHdpdGggdGhlIExpY2Vuc2UuCiAqIFlvdSBtYXkgb2J0YWluIGEgY29weSBvZiB0aGUgTGljZW5zZSBhdAogKgogKiAgICAgIGh0dHBzOi8vd3d3LmFwYWNoZS5vcmcvbGljZW5zZXMvTElDRU5TRS0yLjAKICoKICogVW5sZXNzIHJlcXVpcmVkIGJ5IGFwcGxpY2FibGUgbGF3IG9yIGFncmVlZCB0byBpbiB3cml0aW5nLCBzb2Z0d2FyZQogKiBkaXN0cmlidXRlZCB1bmRlciB0aGUgTGljZW5zZSBpcyBkaXN0cmlidXRlZCBvbiBhbiAiQVMgSVMiIEJBU0lTLAogKiBXSVRIT1VUIFdBUlJBTlRJRVMgT1IgQ09ORElUSU9OUyBPRiBBTlkgS0lORCwgZWl0aGVyIGV4cHJlc3Mgb3IgaW1wbGllZC4KICogU2VlIHRoZSBMaWNlbnNlIGZvciB0aGUgc3BlY2lmaWMgbGFuZ3VhZ2UgZ292ZXJuaW5nIHBlcm1pc3Npb25zIGFuZAogKiBsaW1pdGF0aW9ucyB1bmRlciB0aGUgTGljZW5zZS4KICovCnBhY2thZ2UgY29tLmFsaWJhYmEuY2xvdWQuYWkuZ3JhcGguc2VyaWFsaXplci5wbGFpbl90ZXh0LmphY2tzb247CgppbXBvcnQgb3JnLnNwcmluZ2ZyYW1ld29yay5haS5jaGF0Lm1lc3NhZ2VzLlVzZXJNZXNzYWdlOwppbXBvcnQgb3JnLnNwcmluZ2ZyYW1ld29yay5haS5jb250ZW50Lk1lZGlhOwppbXBvcnQgb3JnLnNwcmluZ2ZyYW1ld29yay51dGlsLk1pbWVUeXBlVXRpbHM7CgppbXBvcnQgamF2YS5pby5JT0V4Y2VwdGlvbjsKaW1wb3J0IGphdmEudXRpbC5BcnJheUxpc3Q7CmltcG9ydCBqYXZhLnV0aWwuTGlzdDsKCmltcG9ydCBjb20uZmFzdGVyeG1sLmphY2tzb24uY29yZS5Kc29uR2VuZXJhdG9yOwppbXBvcnQgY29tLmZhc3RlcnhtbC5qYWNrc29uLmNvcmUuSnNvblBhcnNlcjsKaW1wb3J0IGNvbS5mYXN0ZXJ4bWwuamFja3Nvbi5jb3JlLkpzb25Ub2tlbjsKaW1wb3J0IGNvbS5mYXN0ZXJ4bWwuamFja3Nvbi5jb3JlLmV4Yy5TdHJlYW1Db25zdHJhaW50c0V4Y2VwdGlvbjsKaW1wb3J0IGNvbS5mYXN0ZXJ4bWwuamFja3Nvbi5jb3JlLnR5cGUuV3JpdGFibGVUeXBlSWQ7CmltcG9ydCBjb20uZmFzdGVyeG1sLmphY2tzb24uZGF0YWJpbmQuRGVzZXJpYWxpemF0aW9uQ29udGV4dDsKaW1wb3J0IGNvbS5mYXN0ZXJ4bWwuamFja3Nvbi5kYXRhYmluZC5Kc29uTm9kZTsKaW1wb3J0IGNvbS5mYXN0ZXJ4bWwuamFja3Nvbi5kYXRhYmluZC5PYmplY3RNYXBwZXI7CmltcG9ydCBjb20uZmFzdGVyeG1sLmphY2tzb24uZGF0YWJpbmQuU2VyaWFsaXplclByb3ZpZGVyOwppbXBvcnQgY29tLmZhc3RlcnhtbC5qYWNrc29uLmRhdGFiaW5kLmRlc2VyLnN0ZC5TdGREZXNlcmlhbGl6ZXI7CmltcG9ydCBjb20uZmFzdGVyeG1sLmphY2tzb24uZGF0YWJpbmQuanNvbnR5cGUuVHlwZVNlcmlhbGl6ZXI7CmltcG9ydCBjb20uZmFzdGVyeG1sLmphY2tzb24uZGF0YWJpbmQubm9kZS5PYmplY3ROb2RlOwppbXBvcnQgY29tLmZhc3RlcnhtbC5qYWNrc29uLmRhdGFiaW5kLnNlci5zdGQuU3RkU2VyaWFsaXplcjsKCmltcG9ydCBzdGF0aWMgY29tLmFsaWJhYmEuY2xvdWQuYWkuZ3JhcGguc2VyaWFsaXplci5wbGFpbl90ZXh0LmphY2tzb24uU2VyaWFsaXphdGlvbkhlbHBlci5kZXNlcmlhbGl6ZU1ldGFkYXRhOwppbXBvcnQgc3RhdGljIGNvbS5hbGliYWJhLmNsb3VkLmFpLmdyYXBoLnNlcmlhbGl6ZXIucGxhaW5fdGV4dC5qYWNrc29uLlNlcmlhbGl6YXRpb25IZWxwZXIuc2VyaWFsaXplTWV0YWRhdGE7CgovKioKICogSmFja3NvbiBoYW5kbGVycyBmb3IgdXNlciBtZXNzYWdlcywgaW5jbHVkaW5nIG1lZGlhIHdpdGggU3RyaW5nIG9yIGJ5dGVbXSBkYXRhLiBTcHJpbmcKICogQUkgbm9ybWFsaXplcyBVUkkgYW5kIFJlc291cmNlIG1lZGlhIHRvIHRoZXNlIHR5cGVzLiBPdGhlciBtZWRpYSBkYXRhIHR5cGVzIHJlbWFpbgogKiBvbWl0dGVkIGR1cmluZyBzZXJpYWxpemF0aW9uLiBBbGwgZW1pdHRlZCBtZWRpYSBzdHJpbmcgdmFsdWVzLCBpbmNsdWRpbmcgQmFzZTY0IGRhdGEsCiAqIG11c3QgZml0IHRoZSBPYmplY3RNYXBwZXIncyBjb25maWd1cmVkIHN0cmluZyByZWFkIGxpbWl0LgogKi8KcHVibGljIGludGVyZmFjZSBVc2VyTWVzc2FnZUhhbmRsZXIgewoKCWVudW0gRmllbGQgewoKCQlURVhUKCJ0ZXh0IiksIE1FRElBKCJtZWRpYSIpLCBNSU1FX1RZUEUoIm1pbWVUeXBlIiksIERBVEFfVFlQRSgiZGF0YVR5cGUiKSwgREFUQSgiZGF0YSIpLCBJRCgiaWQiKSwKCQlOQU1FKCJuYW1lIik7CgoJCWZpbmFsIFN0cmluZyBuYW1lOwoKCQlGaWVsZChTdHJpbmcgbmFtZSkgewoJCQl0aGlzLm5hbWUgPSBuYW1lOwoJCX0KCgl9CgoJY2xhc3MgU2VyaWFsaXplciBleHRlbmRzIFN0ZFNlcmlhbGl6ZXI8VXNlck1lc3NhZ2U+IHsKCgkJcHVibGljIFNlcmlhbGl6ZXIoKSB7CgkJCXN1cGVyKFVzZXJNZXNzYWdlLmNsYXNzKTsKCQl9CgoJCUBPdmVycmlkZQoJCXB1YmxpYyB2b2lkIHNlcmlhbGl6ZShVc2VyTWVzc2FnZSBtc2csIEpzb25HZW5lcmF0b3IgZ2VuLCBTZXJpYWxpemVyUHJvdmlkZXIgcHJvdmlkZXIpIHRocm93cyBJT0V4Y2VwdGlvbiB7CgkJCWdlbi53cml0ZVN0YXJ0T2JqZWN0KCk7CgkJCXNlcmlhbGl6ZUZpZWxkcyhtc2csIGdlbiwgcHJvdmlkZXIpOwoJCQlnZW4ud3JpdGVFbmRPYmplY3QoKTsKCQl9CgoJCUBPdmVycmlkZQoJCXB1YmxpYyB2b2lkIHNlcmlhbGl6ZVdpdGhUeXBlKFVzZXJNZXNzYWdlIG1zZywgSnNvbkdlbmVyYXRvciBnZW4sIFNlcmlhbGl6ZXJQcm92aWRlciBwcm92aWRlciwKCQkJCVR5cGVTZXJpYWxpemVyIHR5cGVTZXIpIHRocm93cyBJT0V4Y2VwdGlvbiB7CgkJCVdyaXRhYmxlVHlwZUlkIHR5cGVJZERlZiA9IHR5cGVTZXIud3JpdGVUeXBlUHJlZml4KGdlbiwgdHlwZVNlci50eXBlSWQobXNnLCBKc29uVG9rZW4uU1RBUlRfT0JKRUNUKSk7CgkJCXNlcmlhbGl6ZUZpZWxkcyhtc2csIGdlbiwgcHJvdmlkZXIpOwoJCQl0eXBlU2VyLndyaXRlVHlwZVN1ZmZpeChnZW4sIHR5cGVJZERlZik7CgkJfQoKCQlwcml2YXRlIHZvaWQgc2VyaWFsaXplRmllbGRzKFVzZXJNZXNzYWdlIG1zZywgSnNvbkdlbmVyYXRvciBnZW4sIFNlcmlhbGl6ZXJQcm92aWRlciBwcm92aWRlcikKCQkJCXRocm93cyBJT0V4Y2VwdGlvbiB7CgkJCWdlbi53cml0ZVN0cmluZ0ZpZWxkKEZpZWxkLlRFWFQubmFtZSwgbXNnLmdldFRleHQoKSk7CgkJCXNlcmlhbGl6ZU1ldGFkYXRhKGdlbiwgcHJvdmlkZXIsIG1zZy5nZXRNZXRhZGF0YSgpKTsKCgkJCUxpc3Q8TWVkaWE+IHN1cHBvcnRlZE1lZGlhID0gbXNnLmdldE1lZGlhKCkKCQkJCS5zdHJlYW0oKQoJCQkJLmZpbHRlcihtZWRpYSAtPiBtZWRpYS5nZXREYXRhKCkgaW5zdGFuY2VvZiBTdHJpbmcgfHwgbWVkaWEuZ2V0RGF0YSgpIGluc3RhbmNlb2YgYnl0ZVtdKQoJCQkJLnRvTGlzdCgpOwoJCQlpZiAoIXN1cHBvcnRlZE1lZGlhLmlzRW1wdHkoKSkgewoJCQkJZ2VuLndyaXRlQXJyYXlGaWVsZFN0YXJ0KEZpZWxkLk1FRElBLm5hbWUpOwoJCQkJZm9yIChNZWRpYSBtZWRpYSA6IHN1cHBvcnRlZE1lZGlhKSB7CgkJCQkJc2VyaWFsaXplTWVkaWEobWVkaWEsIGdlbik7CgkJCQl9CgkJCQlnZW4ud3JpdGVFbmRBcnJheSgpOwoJCQl9CgkJfQoKCQlwcml2YXRlIHZvaWQgc2VyaWFsaXplTWVkaWEoTWVkaWEgbWVkaWEsIEpzb25HZW5lcmF0b3IgZ2VuKSB0aHJvd3MgSU9FeGNlcHRpb24gewoJCQkvLyBCaW5hcnkgZGF0YSBpcyBlbmNvZGVkIGFzIHRleHQgaW4gSlNPTiwgc28gcmV0YWluIGl0cyB0eXBlIHNlcGFyYXRlbHkuCgkJCWdlbi53cml0ZVN0YXJ0T2JqZWN0KCk7CgkJCXdyaXRlTWVkaWFTdHJpbmcoRmllbGQuTUlNRV9UWVBFLCBtZWRpYS5nZXRNaW1lVHlwZSgpLnRvU3RyaW5nKCksIGdlbik7CgkJCXdyaXRlTWVkaWFTdHJpbmcoRmllbGQuSUQsIG1lZGlhLmdldElkKCksIGdlbik7CgkJCXdyaXRlTWVkaWFTdHJpbmcoRmllbGQuTkFNRSwgbWVkaWEuZ2V0TmFtZSgpLCBnZW4pOwoJCQlpZiAobWVkaWEuZ2V0RGF0YSgpIGluc3RhbmNlb2YgYnl0ZVtdIGJ5dGVzKSB7CgkJCQl2YWxpZGF0ZU1lZGlhU3RyaW5nTGVuZ3RoKEZpZWxkLkRBVEEsICgoYnl0ZXMubGVuZ3RoICsgMkwpIC8gMykgKiA0LCBnZW4pOwoJCQkJd3JpdGVNZWRpYVN0cmluZyhGaWVsZC5EQVRBX1RZUEUsICJieXRlcyIsIGdlbik7CgkJCQlnZW4ud3JpdGVCaW5hcnlGaWVsZChGaWVsZC5EQVRBLm5hbWUsIGJ5dGVzKTsKCQkJfQoJCQllbHNlIHsKCQkJCXdyaXRlTWVkaWFTdHJpbmcoRmllbGQuREFUQV9UWVBFLCAic3RyaW5nIiwgZ2VuKTsKCQkJCXdyaXRlTWVkaWFTdHJpbmcoRmllbGQuREFUQSwgKFN0cmluZykgbWVkaWEuZ2V0RGF0YSgpLCBnZW4pOwoJCQl9CgkJCWdlbi53cml0ZUVuZE9iamVjdCgpOwoJCX0KCgkJcHJpdmF0ZSB2b2lkIHdyaXRlTWVkaWFTdHJpbmcoRmllbGQgZmllbGQsIFN0cmluZyB2YWx1ZSwgSnNvbkdlbmVyYXRvciBnZW4pIHRocm93cyBJT0V4Y2VwdGlvbiB7CgkJCWlmICh2YWx1ZSAhPSBudWxsKSB7CgkJCQl2YWxpZGF0ZU1lZGlhU3RyaW5nTGVuZ3RoKGZpZWxkLCB2YWx1ZS5sZW5ndGgoKSwgZ2VuKTsKCQkJfQoJCQlnZW4ud3JpdGVTdHJpbmdGaWVsZChmaWVsZC5uYW1lLCB2YWx1ZSk7CgkJfQoKCQlwcml2YXRlIHZvaWQgdmFsaWRhdGVNZWRpYVN0cmluZ0xlbmd0aChGaWVsZCBmaWVsZCwgbG9uZyBsZW5ndGgsIEpzb25HZW5lcmF0b3IgZ2VuKQoJCQkJdGhyb3dzIFN0cmVhbUNvbnN0cmFpbnRzRXhjZXB0aW9uIHsKCQkJaWYgKGdlbi5nZXRDb2RlYygpIGluc3RhbmNlb2YgT2JqZWN0TWFwcGVyIG1hcHBlcikgewoJCQkJaW50IG1heExlbmd0aCA9IG1hcHBlci5nZXRGYWN0b3J5KCkuc3RyZWFtUmVhZENvbnN0cmFpbnRzKCkuZ2V0TWF4U3RyaW5nTGVuZ3RoKCk7CgkJCQlpZiAobGVuZ3RoID4gbWF4TGVuZ3RoKSB7CgkJCQkJdGhyb3cgbmV3IFN0cmVhbUNvbnN0cmFpbnRzRXhjZXB0aW9uKCJVc2VyIG1lc3NhZ2UgbWVkaWEgIiArIGZpZWxkLm5hbWUgKyAiIGxlbmd0aCAoIiArIGxlbmd0aAoJCQkJCQkJKyAiKSBleGNlZWRzIHRoZSBtYXhpbXVtIHN0cmluZyByZWFkIGxlbmd0aCAoIiArIG1heExlbmd0aCArICIpIik7CgkJCQl9CgkJCX0KCQl9CgoJfQoKCWNsYXNzIERlc2VyaWFsaXplciBleHRlbmRzIFN0ZERlc2VyaWFsaXplcjxVc2VyTWVzc2FnZT4gewoKCQlwdWJsaWMgRGVzZXJpYWxpemVyKCkgewoJCQlzdXBlcihVc2VyTWVzc2FnZS5jbGFzcyk7CgkJfQoKCQlAT3ZlcnJpZGUKCQlwdWJsaWMgVXNlck1lc3NhZ2UgZGVzZXJpYWxpemUoSnNvblBhcnNlciBqc29uUGFyc2VyLCBEZXNlcmlhbGl6YXRpb25Db250ZXh0IGN0eCkgdGhyb3dzIElPRXhjZXB0aW9uIHsKCQkJdmFyIG1hcHBlciA9IChPYmplY3RNYXBwZXIpIGpzb25QYXJzZXIuZ2V0Q29kZWMoKTsKCQkJT2JqZWN0Tm9kZSBub2RlID0gbWFwcGVyLnJlYWRUcmVlKGpzb25QYXJzZXIpOwoKCQkJdmFyIHRleHQgPSBub2RlLmZpbmRWYWx1ZShGaWVsZC5URVhULm5hbWUpLmFzVGV4dCgpOwoJCQl2YXIgbWV0YWRhdGEgPSBkZXNlcmlhbGl6ZU1ldGFkYXRhKG1hcHBlciwgbm9kZSk7CgoJCQlMaXN0PE1lZGlhPiBtZWRpYSA9IGRlc2VyaWFsaXplTWVkaWEobm9kZS5nZXQoRmllbGQuTUVESUEubmFtZSksIGN0eCk7CgkJCXJldHVybiBVc2VyTWVzc2FnZS5idWlsZGVyKCkudGV4dCh0ZXh0KS5tZXRhZGF0YShtZXRhZGF0YSkubWVkaWEobWVkaWEpLmJ1aWxkKCk7CgoJCX0KCgkJcHJpdmF0ZSBMaXN0PE1lZGlhPiBkZXNlcmlhbGl6ZU1lZGlhKEpzb25Ob2RlIG5vZGUsIERlc2VyaWFsaXphdGlvbkNvbnRleHQgY3R4KSB0aHJvd3MgSU9FeGNlcHRpb24gewoJCQlpZiAobm9kZSA9PSBudWxsIHx8IG5vZGUuaXNOdWxsKCkpIHsKCQkJCXJldHVybiBMaXN0Lm9mKCk7CgkJCX0KCQkJaWYgKCFub2RlLmlzQXJyYXkoKSkgewoJCQkJcmV0dXJuIGN0eC5yZXBvcnRJbnB1dE1pc21hdGNoKFVzZXJNZXNzYWdlLmNsYXNzLCAiVXNlciBtZXNzYWdlIG1lZGlhIG11c3QgYmUgYW4gYXJyYXkiKTsKCQkJfQoJCQlMaXN0PE1lZGlhPiBtZWRpYSA9IG5ldyBBcnJheUxpc3Q8PigpOwoJCQlmb3IgKEpzb25Ob2RlIGl0ZW0gOiBub2RlKSB7CgkJCQlKc29uTm9kZSBkYXRhID0gaXRlbS5wYXRoKEZpZWxkLkRBVEEubmFtZSk7CgkJCQlTdHJpbmcgZGF0YVR5cGUgPSBpdGVtLnBhdGgoRmllbGQuREFUQV9UWVBFLm5hbWUpLmFzVGV4dCgic3RyaW5nIik7CgkJCQlpZiAoIWRhdGEuaXNUZXh0dWFsKCkgJiYgISgiYnl0ZXMiLmVxdWFscyhkYXRhVHlwZSkgJiYgZGF0YS5pc0JpbmFyeSgpKSkgewoJCQkJCXJldHVybiBjdHgucmVwb3J0SW5wdXRNaXNtYXRjaChVc2VyTWVzc2FnZS5jbGFzcywKCQkJCQkJCSJVc2VyIG1lc3NhZ2UgbWVkaWEgZGF0YSBtdXN0IGJlIGEgc3RyaW5nIG9yIG5hdGl2ZSBiaW5hcnkgZm9yIGJ5dGVzIik7CgkJCQl9CgkJCQlPYmplY3QgdmFsdWUgPSBzd2l0Y2ggKGRhdGFUeXBlKSB7CgkJCQkJY2FzZSAiYnl0ZXMiIC0+IGRhdGEuYmluYXJ5VmFsdWUoKTsKCQkJCQljYXNlICJzdHJpbmciIC0+IGRhdGEuYXNUZXh0KCk7CgkJCQkJZGVmYXVsdCAtPiBjdHgucmVwb3J0SW5wdXRNaXNtYXRjaChVc2VyTWVzc2FnZS5jbGFzcywgIlVuc3VwcG9ydGVkIHVzZXIgbWVzc2FnZSBtZWRpYSBkYXRhIHR5cGUiKTsKCQkJCX07CgkJCQltZWRpYS5hZGQoTWVkaWEuYnVpbGRlcigpCgkJCQkJLm1pbWVUeXBlKE1pbWVUeXBlVXRpbHMucGFyc2VNaW1lVHlwZShpdGVtLnBhdGgoRmllbGQuTUlNRV9UWVBFLm5hbWUpLmFzVGV4dCgpKSkKCQkJCQkuZGF0YSh2YWx1ZSkKCQkJCQkuaWQoaXRlbS5wYXRoKEZpZWxkLklELm5hbWUpLmFzVGV4dChudWxsKSkKCQkJCQkubmFtZShpdGVtLnBhdGgoRmllbGQuTkFNRS5uYW1lKS5hc1RleHQobnVsbCkpCgkJCQkJLmJ1aWxkKCkpOwoJCQl9CgkJCXJldHVybiBtZWRpYTsKCQl9CgoJfQoKfQo=')
+          assert hashlib.sha256(raw).hexdigest() == 'bd6d571229fd04ee05f7e00dbbc1f4a8ab5c960b616c4cccdba0538bf8c60962'
+          Path('spring-ai-alibaba-graph-core/src/main/java/com/alibaba/cloud/ai/graph/serializer/plain_text/jackson/UserMessageHandler.java').write_bytes(raw)
+          DRAFT
+          set +e
+          ./mvnw -B -ntp -pl :spring-ai-alibaba-graph-core -am \
+            -Dspotless.apply.skip=true -Dmaven.sorter.skip=true \
+            '-Dtest=UserMessageMediaSerializationTest#shouldHonorReaderBudgetForNativeBinaryTrees' \
+            -Dsurefire.failIfNoSpecifiedTests=false test
+          control_exit=$?
+          set -e
+          test "$control_exit" = 1
+          python3 - <<'DRAFTRESULT'
+          import xml.etree.ElementTree as ET
+          suite = ET.parse('spring-ai-alibaba-graph-core/target/surefire-reports/TEST-com.alibaba.cloud.ai.graph.plain_text.UserMessageMediaSerializationTest.xml').getroot()
+          counts = {key: int(suite.attrib.get(key, '0')) for key in ('tests', 'failures', 'errors', 'skipped')}
+          print('DRAFT_V1_NATIVE_READ_CONTROL_COUNTS', counts)
+          assert counts == dict(tests=1, failures=1, errors=0, skipped=0), counts
+          case = suite.find('testcase')
+          assert case.attrib['name'] == 'shouldHonorReaderBudgetForNativeBinaryTrees'
+          assert 'nothing was thrown' in ET.tostring(case.find('failure'), encoding='unicode')
+          print('DRAFT_V1_NATIVE_READ_EXPECTED_FAILURE_VERIFIED')
+          DRAFTRESULT
+      - name: Restore candidate and prove final tracked source
+        if: ${{ always() && steps.source.outcome == 'success' }}
+        run: |
+          git restore --source=6194e1d8ad00d5608e628e23ecbdaddc209cabed -- spring-ai-alibaba-graph-core/src/main/java/com/alibaba/cloud/ai/graph/serializer/plain_text/jackson/UserMessageHandler.java
+          test "$(git rev-parse HEAD)" = 6194e1d8ad00d5608e628e23ecbdaddc209cabed
+          test "$(git rev-parse 'HEAD^{tree}')" = f21245312f67afff7dbaf790f19e1b0473ff65ac
+          git diff HEAD --exit-code
+          git diff --cached --exit-code
+          echo CANDIDATE_SOURCE_UNCHANGED_FINAL

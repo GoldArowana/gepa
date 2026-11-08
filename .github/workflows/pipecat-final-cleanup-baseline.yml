@@ -1,4 +1,4 @@
-name: Pipecat normal suite base and candidate diagnostic
+name: Pipecat isolated observed upstream failures
 on:
   push:
     branches: [validation-pipecat-cleanup-owner-20261108]
@@ -6,12 +6,12 @@ permissions:
   contents: read
 jobs:
   normal:
-    name: ${{ matrix.case }} normal upstream suite
+    name: ${{ matrix.case }} isolated failure nodes
     runs-on: ubuntu-latest
     timeout-minutes: 12
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 1
       matrix:
         include:
           - case: base
@@ -90,14 +90,39 @@ jobs:
             --extra typesafe \
             --extra websocket
       - name: Verify bootstrap preserves tracked source
+        id: preflight
         run: git diff HEAD --exit-code
-      - name: Run normal xdist suite with bounded observational diagnostics
+      - name: Isolate LLM expression reuse
+        if: always() && steps.preflight.outcome == 'success'
+        run: timeout 60s uv run pytest -n 0 -x -vv -s tests/test_llm_expression.py::test_the_perception_upstream_is_taught_with_the_tts_expression
+      - name: Isolate turn-controller strategy stop
+        if: always() && steps.preflight.outcome == 'success'
+        run: timeout 60s uv run pytest -n 0 -x -vv -s tests/test_user_turn_controller.py::TestUserTurnController::test_handle_user_turn_stopped_called_on_strategy_stop
+      - name: Isolate VAD with simple readonly task-chain timer
+        if: always() && steps.preflight.outcome == 'success'
         run: |
-          set +e
-          timeout --signal=TERM --kill-after=10s 480s uv run pytest -n 8 -vv -o faulthandler_timeout=180
-          result=$?
-          printf 'ACTUAL_NORMAL_SUITE_EXIT_CODE=%s\n' "$result"
-          exit "$result"
+          timeout --signal=TERM --kill-after=5s 75s uv run python - <<'PYCODE'
+          import asyncio, signal, sys, pytest
+          def dump(signum, frame):
+              try:
+                  tasks = asyncio.all_tasks()
+              except RuntimeError:
+                  print("TASK_SNAPSHOT no running loop", flush=True)
+                  return
+              for task in tasks:
+                  print("TASK_SNAPSHOT", task.get_name(), "done", task.done(), flush=True)
+                  coro = task.get_coro()
+                  for _ in range(30):
+                      current = getattr(coro, "cr_frame", None)
+                      if current is not None:
+                          print(current.f_code.co_filename, current.f_code.co_name, current.f_lineno, flush=True)
+                      coro = getattr(coro, "cr_await", None)
+                      if coro is None:
+                          break
+          signal.signal(signal.SIGALRM, dump)
+          signal.alarm(30)
+          sys.exit(pytest.main(["-n", "0", "-s", "-vv", "-o", "faulthandler_timeout=45", "tests/test_turn_start_vad_state.py::TestTurnStartVADState::test_transcript_only_turn_after_a_vad_turn_still_completes_promptly"]))
+          PYCODE
       - name: Always verify asserted source
         if: always()
         run: |

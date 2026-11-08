@@ -1,27 +1,122 @@
-name: Pipecat isolated observed upstream failures
+name: Pipecat final cleanup R6 compatible candidate validation
 on:
   push:
     branches: [validation-pipecat-cleanup-owner-20261108]
 permissions:
   contents: read
 jobs:
+  validation:
+    name: ${{ matrix.case }} Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - case: candidate
+            python: "3.12"
+            repo: GoldArowana/pipecat
+            source_sha: c1d171d6f96dcca6a8d79888ac34ed34f7a3ed88
+            source_tree: 2aef8b08d946179dc9ce59ea4e52355cac969dc0
+          - case: candidate
+            python: "3.11"
+            repo: GoldArowana/pipecat
+            source_sha: c1d171d6f96dcca6a8d79888ac34ed34f7a3ed88
+            source_tree: 2aef8b08d946179dc9ce59ea4e52355cac969dc0
+    defaults:
+      run:
+        working-directory: source
+    env:
+      UV_NO_CACHE: "1"
+      SOURCE_REPO: ${{ matrix.repo }}
+      SOURCE_SHA: ${{ matrix.source_sha }}
+      SOURCE_TREE: ${{ matrix.source_tree }}
+    steps:
+      - name: Checkout exact asserted source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.source_sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          enable-cache: false
+      - name: Assert actual source identity
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          printf 'Source repository %s\nSource commit %s\nSource tree %s\nCI event %s\n' "$SOURCE_REPO" "$SOURCE_SHA" "$SOURCE_TREE" "$GITHUB_SHA"
+          python --version
+          uv --version
+          git diff HEAD --exit-code
+      - name: Install normal frozen development environment
+        run: uv sync --frozen --group dev
+      - name: Verify bootstrap preserves tracked source
+        run: git diff HEAD --exit-code
+      - name: Run existing TaskManager tests
+        run: uv run --no-sync python -m pytest -n 0 tests/test_task_manager.py
+      - name: Run identical expected-value public cleanup regression
+        env:
+          DIAGNOSTIC_B64: IiIiUHVibGljIGxpZmVjeWNsZSByZWdyZXNzaW9uLCBleGVjdXRlZCBhZ2FpbnN0IHRoZSBhc3NlcnRlZCBQaXBlY2F0IHNvdXJjZS4iIiIKCmltcG9ydCBhc3luY2lvCmltcG9ydCB1bml0dGVzdAoKZnJvbSBwaXBlY2F0LmZyYW1lcy5mcmFtZXMgaW1wb3J0IFN0YXJ0RnJhbWUsIFRleHRGcmFtZQpmcm9tIHBpcGVjYXQucHJvY2Vzc29ycy5mcmFtZV9wcm9jZXNzb3IgaW1wb3J0IEZyYW1lUHJvY2Vzc29yCmZyb20gcGlwZWNhdC51dGlscy5hc3luY2lvLnRhc2tfbWFuYWdlciBpbXBvcnQgVGFza01hbmFnZXIKZnJvbSB0ZXN0cy5mcmFtZV9wcm9jZXNzb3JfaGVscGVycyBpbXBvcnQgZnJhbWVfcHJvY2Vzc29yX3NldHVwCgoKY2xhc3MgQ2FuY2VsbGF0aW9uUmVzaXN0YW50UHJvY2Vzc29yKEZyYW1lUHJvY2Vzc29yKToKICAgIGRlZiBfX2luaXRfXyhzZWxmKToKICAgICAgICBzdXBlcigpLl9faW5pdF9fKCkKICAgICAgICBzZWxmLmVudGVyZWQgPSBhc3luY2lvLkV2ZW50KCkKICAgICAgICBzZWxmLnJlbGVhc2UgPSBhc3luY2lvLkV2ZW50KCkKICAgICAgICBzZWxmLmNhbmNlbGxhdGlvbl9yZXF1ZXN0cyA9IDAKCiAgICBhc3luYyBkZWYgcHJvY2Vzc19mcmFtZShzZWxmLCBmcmFtZSwgZGlyZWN0aW9uKToKICAgICAgICBhd2FpdCBzdXBlcigpLnByb2Nlc3NfZnJhbWUoZnJhbWUsIGRpcmVjdGlvbikKICAgICAgICBpZiBub3QgaXNpbnN0YW5jZShmcmFtZSwgVGV4dEZyYW1lKToKICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgc2VsZi5lbnRlcmVkLnNldCgpCiAgICAgICAgd2hpbGUgbm90IHNlbGYucmVsZWFzZS5pc19zZXQoKToKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgYXdhaXQgc2VsZi5yZWxlYXNlLndhaXQoKQogICAgICAgICAgICBleGNlcHQgYXN5bmNpby5DYW5jZWxsZWRFcnJvcjoKICAgICAgICAgICAgICAgIHNlbGYuY2FuY2VsbGF0aW9uX3JlcXVlc3RzICs9IDEKICAgICAgICAjIERldGVybWluaXN0aWMgdGVhcmRvd24ga2VlcHMgYSBmYWlsaW5nIHRlc3QgZnJvbSBsZWFraW5nIGl0cyB0YXNrLgogICAgICAgIHJhaXNlIGFzeW5jaW8uQ2FuY2VsbGVkRXJyb3IKCgpjbGFzcyBGcmFtZVByb2Nlc3NvckNsZWFudXBSZWdyZXNzaW9uKHVuaXR0ZXN0Lklzb2xhdGVkQXN5bmNpb1Rlc3RDYXNlKToKICAgIGFzeW5jIGRlZiB0ZXN0X2NsZWFudXBfaXNfYm91bmRlZF93aGVuX2ludGVybmFsX3Rhc2tfc3dhbGxvd3NfY2FuY2VsbGF0aW9uKHNlbGYpOgogICAgICAgIG1hbmFnZXIgPSBUYXNrTWFuYWdlcigpCiAgICAgICAgcHJvY2Vzc29yID0gQ2FuY2VsbGF0aW9uUmVzaXN0YW50UHJvY2Vzc29yKCkKICAgICAgICBhd2FpdCBwcm9jZXNzb3Iuc2V0dXAoZnJhbWVfcHJvY2Vzc29yX3NldHVwKG1hbmFnZXIpKQogICAgICAgIGNsZWFudXAgPSBOb25lCiAgICAgICAgdHJ5OgogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucXVldWVfZnJhbWUoU3RhcnRGcmFtZSgpKQogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucXVldWVfZnJhbWUoVGV4dEZyYW1lKCJjYW5jZWxsYXRpb24tcmVzaXN0YW50IG9wZXJhdGlvbiIpKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLndhaXRfZm9yKHByb2Nlc3Nvci5lbnRlcmVkLndhaXQoKSwgdGltZW91dD0yKQogICAgICAgICAgICBjbGVhbnVwID0gYXN5bmNpby5jcmVhdGVfdGFzayhwcm9jZXNzb3IuY2xlYW51cCgpKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLndhaXQoe2NsZWFudXB9LCB0aW1lb3V0PTEuNCkKICAgICAgICAgICAgc2VsZi5hc3NlcnRUcnVlKAogICAgICAgICAgICAgICAgY2xlYW51cC5kb25lKCksCiAgICAgICAgICAgICAgICAiRnJhbWVQcm9jZXNzb3IuY2xlYW51cCBleGNlZWRlZCB0aGUgaW50ZXJuYWwgcHJvY2VzcyBjYW5jZWxsYXRpb24gIgogICAgICAgICAgICAgICAgZiJkZWFkbGluZSB3aGlsZSBpdHMgY2hpbGQgc3dhbGxvd2VkIHtwcm9jZXNzb3IuY2FuY2VsbGF0aW9uX3JlcXVlc3RzfSAiCiAgICAgICAgICAgICAgICAiY2FuY2VsbGF0aW9uIHJlcXVlc3RzIiwKICAgICAgICAgICAgKQogICAgICAgICAgICBhd2FpdCBjbGVhbnVwCiAgICAgICAgICAgIHNlbGYuYXNzZXJ0R3JlYXRlcihwcm9jZXNzb3IuY2FuY2VsbGF0aW9uX3JlcXVlc3RzLCAwKQogICAgICAgICAgICBzZWxmLmFzc2VydFRydWUoCiAgICAgICAgICAgICAgICBtYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwKICAgICAgICAgICAgICAgICJBIHN0aWxsLXBlbmRpbmcgaW50ZXJuYWwgdGFzayBtdXN0IHJldGFpbiBhIFRhc2tNYW5hZ2VyIG93bmVyIiwKICAgICAgICAgICAgKQogICAgICAgIGZpbmFsbHk6CiAgICAgICAgICAgIHByb2Nlc3Nvci5yZWxlYXNlLnNldCgpCiAgICAgICAgICAgIGlmIGNsZWFudXAgaXMgbm90IE5vbmU6CiAgICAgICAgICAgICAgICBhd2FpdCBjbGVhbnVwCiAgICAgICAgICAgIGVsc2U6CiAgICAgICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IuY2xlYW51cCgpCiAgICAgICAgICAgIGF3YWl0IGFzeW5jaW8uZ2F0aGVyKCptYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwgcmV0dXJuX2V4Y2VwdGlvbnM9VHJ1ZSkKICAgICAgICAgICAgYXdhaXQgYXN5bmNpby5zbGVlcCgwKQogICAgICAgICAgICBzZWxmLmFzc2VydEVxdWFsKG1hbmFnZXIuY3VycmVudF90YXNrcygpLCBbXSkKCgppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOgogICAgdW5pdHRlc3QubWFpbih2ZXJib3NpdHk9MikK
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE'
+          import base64, os, hashlib
+          from pathlib import Path
+          data = base64.b64decode(os.environ["DIAGNOSTIC_B64"], validate=True)
+          assert hashlib.sha256(data).hexdigest() == "1fbbd4666248cc5d656958a7ca41ac62ada2add0cfa9394d064cbd12dcc9cef7"
+          (Path(os.environ["RUNNER_TEMP"]) / "pipecat_cleanup_regression.py").write_bytes(data)
+          PYCODE
+          PYTHONPATH="$PWD:$PWD/src" timeout 30s uv run --no-sync python "$RUNNER_TEMP/pipecat_cleanup_regression.py"
+      - name: Preserve completed active watcher result propagation
+        env:
+          ACTIVE_PROBE_B64: IiIiUHJlc2VydmUgc3luY2hyb25vdXMgY29uc3VtcHRpb24gb2YgYW4gYWxyZWFkeS1maW5pc2hlZCBhY3RpdmUgd2F0Y2hlci4iIiIKCmltcG9ydCBhc3luY2lvCmltcG9ydCB1bml0dGVzdAoKZnJvbSBwaXBlY2F0LnByb2Nlc3NvcnMuZnJhbWVfcHJvY2Vzc29yIGltcG9ydCBGcmFtZVByb2Nlc3Nvcgpmcm9tIHBpcGVjYXQudXRpbHMuYXN5bmNpby50YXNrX21hbmFnZXIgaW1wb3J0IFRhc2tNYW5hZ2VyCmZyb20gdGVzdHMuZnJhbWVfcHJvY2Vzc29yX2hlbHBlcnMgaW1wb3J0IGZyYW1lX3Byb2Nlc3Nvcl9zZXR1cAoKCmNsYXNzIEZhdGFsUmVhZGluZXNzKEJhc2VFeGNlcHRpb24pOgogICAgcGFzcwoKCmNsYXNzIENvbXBsZXRlZEFjdGl2ZVdhdGNoZXJSZWdyZXNzaW9uKHVuaXR0ZXN0Lklzb2xhdGVkQXN5bmNpb1Rlc3RDYXNlKToKICAgIGFzeW5jIGRlZiB0ZXN0X2ZpbmFsX2NsZWFudXBfY29uc3VtZXNfdGhlX2NvbXBsZXRlZF9hY3RpdmVfZmF0YWxfcmVzdWx0KHNlbGYpOgogICAgICAgIG1hbmFnZXIgPSBUYXNrTWFuYWdlcigpCiAgICAgICAgcHJvY2Vzc29yID0gRnJhbWVQcm9jZXNzb3IoKQogICAgICAgIGF3YWl0IHByb2Nlc3Nvci5zZXR1cChmcmFtZV9wcm9jZXNzb3Jfc2V0dXAobWFuYWdlcikpCiAgICAgICAgZW50ZXJlZCA9IGFzeW5jaW8uRXZlbnQoKQoKICAgICAgICBhc3luYyBkZWYgcmVhZHkoKToKICAgICAgICAgICAgZW50ZXJlZC5zZXQoKQogICAgICAgICAgICByYWlzZSBGYXRhbFJlYWRpbmVzcygiY29tcGxldGVkIGFjdGl2ZSByZWFkaW5lc3MgZmFpbHVyZSIpCgogICAgICAgIHdhdGNoZXIgPSBOb25lCiAgICAgICAgdHJ5OgogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucGF1c2VfcHJvY2Vzc2luZ19hbGxfZnJhbWVzX3VudGlsKHJlYWR5KQogICAgICAgICAgICB3YXRjaGVyID0gcHJvY2Vzc29yLl9GcmFtZVByb2Nlc3Nvcl9fcGF1c2Vfd2F0Y2hlcl90YXNrCiAgICAgICAgICAgIGF3YWl0IGFzeW5jaW8ud2FpdF9mb3IoZW50ZXJlZC53YWl0KCksIHRpbWVvdXQ9MSkKICAgICAgICAgICAgYXdhaXQgYXN5bmNpby53YWl0KHt3YXRjaGVyfSwgdGltZW91dD0xKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLnNsZWVwKDApCiAgICAgICAgICAgIHNlbGYuYXNzZXJ0VHJ1ZSh3YXRjaGVyLmRvbmUoKSkKICAgICAgICAgICAgc2VsZi5hc3NlcnRFcXVhbChtYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwgW10pCiAgICAgICAgICAgIHdpdGggc2VsZi5hc3NlcnRSYWlzZXMoRmF0YWxSZWFkaW5lc3MpOgogICAgICAgICAgICAgICAgYXdhaXQgcHJvY2Vzc29yLmNsZWFudXAoKQogICAgICAgIGZpbmFsbHk6CiAgICAgICAgICAgIGlmIHdhdGNoZXIgaXMgbm90IE5vbmUgYW5kIHdhdGNoZXIuZG9uZSgpOgogICAgICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgICAgIHdhdGNoZXIucmVzdWx0KCkKICAgICAgICAgICAgICAgIGV4Y2VwdCBCYXNlRXhjZXB0aW9uOgogICAgICAgICAgICAgICAgICAgIHBhc3MKICAgICAgICAgICAgYXdhaXQgcHJvY2Vzc29yLmNsZWFudXAoKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICB1bml0dGVzdC5tYWluKHZlcmJvc2l0eT0yKQo=
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE'
+          import base64, os, hashlib
+          from pathlib import Path
+          data = base64.b64decode(os.environ["ACTIVE_PROBE_B64"], validate=True)
+          assert hashlib.sha256(data).hexdigest() == "3b9dfd5dec7bfaf295d2c1e02ef173e76a15d22077709f1909fdc174fb762ea7"
+          (Path(os.environ["RUNNER_TEMP"]) / "pipecat_completed_watcher_regression.py").write_bytes(data)
+          PYCODE
+          PYTHONPATH="$PWD:$PWD/src" timeout 30s uv run --no-sync python "$RUNNER_TEMP/pipecat_completed_watcher_regression.py"
+      - name: Run existing and focused processor lifecycle tests
+        if: matrix.case == 'candidate'
+        run: uv run --no-sync python -m pytest -n 0 tests/test_frame_processor.py tests/test_frame_processor_cleanup.py tests/test_frame_processor_setup_lifecycle.py
+      - name: Check candidate source and test lint
+        if: matrix.case == 'candidate'
+        run: |
+          uv run --no-sync ruff check src/pipecat/processors/frame_processor.py tests/test_frame_processor_cleanup.py tests/test_frame_processor_setup_lifecycle.py
+          uv run --no-sync ruff format --check --diff src/pipecat/processors/frame_processor.py tests/test_frame_processor_cleanup.py tests/test_frame_processor_setup_lifecycle.py
+      - name: Always verify unchanged asserted source
+        if: always()
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git diff HEAD --exit-code
   normal:
-    name: ${{ matrix.case }} isolated failure nodes
+    needs: validation
+    name: R6 normal upstream suite
     runs-on: ubuntu-latest
     timeout-minutes: 12
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         include:
-          - case: base
-            repo: pipecat-ai/pipecat
-            sha: 3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b
-            tree: d143e2a002a7c159429ab884f9f8fec6143e2b55
           - case: candidate
             repo: GoldArowana/pipecat
-            sha: bc47787115c98056e67c516a41c9a5b40686291b
-            tree: af94274f76749376cab2a12ee6fd6a1b1c24edc0
+            sha: c1d171d6f96dcca6a8d79888ac34ed34f7a3ed88
+            tree: 2aef8b08d946179dc9ce59ea4e52355cac969dc0
     defaults:
       run:
         working-directory: source
@@ -90,43 +185,62 @@ jobs:
             --extra typesafe \
             --extra websocket
       - name: Verify bootstrap preserves tracked source
-        id: preflight
         run: git diff HEAD --exit-code
-      - name: Isolate LLM expression reuse
-        if: always() && steps.preflight.outcome == 'success'
-        run: timeout 60s uv run pytest -n 0 -x -vv -s tests/test_llm_expression.py::test_the_perception_upstream_is_taught_with_the_tts_expression
-      - name: Isolate turn-controller strategy stop
-        if: always() && steps.preflight.outcome == 'success'
-        run: timeout 60s uv run pytest -n 0 -x -vv -s tests/test_user_turn_controller.py::TestUserTurnController::test_handle_user_turn_stopped_called_on_strategy_stop
-      - name: Isolate VAD with simple readonly task-chain timer
-        if: always() && steps.preflight.outcome == 'success'
+      - name: Run normal xdist suite with bounded observational diagnostics
         run: |
-          timeout --signal=TERM --kill-after=5s 75s uv run python - <<'PYCODE'
-          import asyncio, signal, sys, pytest
-          def dump(signum, frame):
-              try:
-                  tasks = asyncio.all_tasks()
-              except RuntimeError:
-                  print("TASK_SNAPSHOT no running loop", flush=True)
-                  return
-              for task in tasks:
-                  print("TASK_SNAPSHOT", task.get_name(), "done", task.done(), flush=True)
-                  coro = task.get_coro()
-                  for _ in range(30):
-                      current = getattr(coro, "cr_frame", None)
-                      if current is not None:
-                          print(current.f_code.co_filename, current.f_code.co_name, current.f_lineno, flush=True)
-                      coro = getattr(coro, "cr_await", None)
-                      if coro is None:
-                          break
-          signal.signal(signal.SIGALRM, dump)
-          signal.alarm(30)
-          sys.exit(pytest.main(["-n", "0", "-s", "-vv", "-o", "faulthandler_timeout=45", "tests/test_turn_start_vad_state.py::TestTurnStartVADState::test_transcript_only_turn_after_a_vad_turn_still_completes_promptly"]))
-          PYCODE
+          set +e
+          timeout --signal=TERM --kill-after=10s 480s uv run pytest -n 8 -vv -o faulthandler_timeout=180
+          result=$?
+          printf 'ACTUAL_NORMAL_SUITE_EXIT_CODE=%s\n' "$result"
+          exit "$result"
       - name: Always verify asserted source
         if: always()
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git diff HEAD --exit-code
+  quality:
+    name: R6 normal upstream code quality
+    needs: validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: source
+    env:
+      UV_NO_CACHE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: GoldArowana/pipecat
+          ref: c1d171d6f96dcca6a8d79888ac34ed34f7a3ed88
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          version: "latest"
+          enable-cache: false
+      - name: Normal upstream Python
+        run: uv python install 3.12
+      - name: Assert source
+        run: |
+          test "$(git rev-parse HEAD)" = "c1d171d6f96dcca6a8d79888ac34ed34f7a3ed88"
+          test "$(git rev-parse 'HEAD^{tree}')" = "2aef8b08d946179dc9ce59ea4e52355cac969dc0"
+          git diff HEAD --exit-code
+      - name: Normal upstream quality bootstrap
+        run: uv sync --group dev --all-extras --no-extra gstreamer --no-extra local
+      - name: Normal upstream quality commands
+        run: |
+          uv run ruff format --diff
+          uv run ruff check
+          uv run pyright
+          uv run scripts/cli/update_registry.py
+          git diff --exit-code src/pipecat/cli/registry/_imports.py src/pipecat/cli/registry/_configs.py
+      - name: Always verify source
+        if: always()
+        run: |
+          test "$(git rev-parse HEAD)" = "c1d171d6f96dcca6a8d79888ac34ed34f7a3ed88"
+          test "$(git rev-parse 'HEAD^{tree}')" = "2aef8b08d946179dc9ce59ea4e52355cac969dc0"
           git diff HEAD --exit-code

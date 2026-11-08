@@ -1,4 +1,4 @@
-name: Pipecat final cleanup paired validation
+name: Pipecat final cleanup R3 candidate validation
 on:
   push:
     branches: [validation-pipecat-cleanup-owner-20261108]
@@ -14,26 +14,16 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - case: base
-            python: "3.12"
-            repo: pipecat-ai/pipecat
-            source_sha: 3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b
-            source_tree: d143e2a002a7c159429ab884f9f8fec6143e2b55
-          - case: base
-            python: "3.11"
-            repo: pipecat-ai/pipecat
-            source_sha: 3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b
-            source_tree: d143e2a002a7c159429ab884f9f8fec6143e2b55
           - case: candidate
             python: "3.12"
             repo: GoldArowana/pipecat
-            source_sha: 6120b88d4954f1bd4d98b9de31861b1c191693da
-            source_tree: 118b88d84416f3ffacf207c8f05d337de81fde6b
+            source_sha: bb4960e9d00c0a85f025abaa1f0c6d76ad2f728b
+            source_tree: 7661e7cbfb017659f0ba9fd41b24764c1cc3c8c6
           - case: candidate
             python: "3.11"
             repo: GoldArowana/pipecat
-            source_sha: 6120b88d4954f1bd4d98b9de31861b1c191693da
-            source_tree: 118b88d84416f3ffacf207c8f05d337de81fde6b
+            source_sha: bb4960e9d00c0a85f025abaa1f0c6d76ad2f728b
+            source_tree: 7661e7cbfb017659f0ba9fd41b24764c1cc3c8c6
     defaults:
       run:
         working-directory: source

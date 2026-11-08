@@ -1,0 +1,69 @@
+name: Pipecat final cleanup expected-value baseline
+on:
+  push:
+    branches: [validation-pipecat-cleanup-owner-20261108]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        python-version: ["3.12", "3.11"]
+    defaults:
+      run:
+        working-directory: source
+    env:
+      UV_NO_CACHE: "1"
+    steps:
+      - name: Checkout exact upstream source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: pipecat-ai/pipecat
+          ref: 3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          enable-cache: false
+      - name: Assert actual source identity
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b"
+          test "$(git rev-parse 'HEAD^{tree}')" = "d143e2a002a7c159429ab884f9f8fec6143e2b55"
+          printf 'Source repository pipecat-ai/pipecat\nEvent commit %s\n' "$GITHUB_SHA"
+          python --version
+          uv --version
+          git diff HEAD --exit-code
+      - name: Install normal frozen development environment
+        run: uv sync --frozen --group dev
+      - name: Verify bootstrap preserves tracked source
+        run: git diff HEAD --exit-code
+      - name: Run existing TaskManager tests
+        run: uv run --no-sync python -m pytest tests/test_task_manager.py
+      - name: Require bounded final internal-task cleanup
+        env:
+          DIAGNOSTIC_B64: IiIiUHVibGljIGxpZmVjeWNsZSByZWdyZXNzaW9uLCBleGVjdXRlZCBhZ2FpbnN0IHRoZSBhc3NlcnRlZCBQaXBlY2F0IHNvdXJjZS4iIiIKCmltcG9ydCBhc3luY2lvCmltcG9ydCB1bml0dGVzdAoKZnJvbSBwaXBlY2F0LmZyYW1lcy5mcmFtZXMgaW1wb3J0IFN0YXJ0RnJhbWUsIFRleHRGcmFtZQpmcm9tIHBpcGVjYXQucHJvY2Vzc29ycy5mcmFtZV9wcm9jZXNzb3IgaW1wb3J0IEZyYW1lUHJvY2Vzc29yCmZyb20gcGlwZWNhdC51dGlscy5hc3luY2lvLnRhc2tfbWFuYWdlciBpbXBvcnQgVGFza01hbmFnZXIKZnJvbSB0ZXN0cy5mcmFtZV9wcm9jZXNzb3JfaGVscGVycyBpbXBvcnQgZnJhbWVfcHJvY2Vzc29yX3NldHVwCgoKY2xhc3MgQ2FuY2VsbGF0aW9uUmVzaXN0YW50UHJvY2Vzc29yKEZyYW1lUHJvY2Vzc29yKToKICAgIGRlZiBfX2luaXRfXyhzZWxmKToKICAgICAgICBzdXBlcigpLl9faW5pdF9fKCkKICAgICAgICBzZWxmLmVudGVyZWQgPSBhc3luY2lvLkV2ZW50KCkKICAgICAgICBzZWxmLnJlbGVhc2UgPSBhc3luY2lvLkV2ZW50KCkKICAgICAgICBzZWxmLmNhbmNlbGxhdGlvbl9yZXF1ZXN0cyA9IDAKCiAgICBhc3luYyBkZWYgcHJvY2Vzc19mcmFtZShzZWxmLCBmcmFtZSwgZGlyZWN0aW9uKToKICAgICAgICBhd2FpdCBzdXBlcigpLnByb2Nlc3NfZnJhbWUoZnJhbWUsIGRpcmVjdGlvbikKICAgICAgICBpZiBub3QgaXNpbnN0YW5jZShmcmFtZSwgVGV4dEZyYW1lKToKICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgc2VsZi5lbnRlcmVkLnNldCgpCiAgICAgICAgd2hpbGUgbm90IHNlbGYucmVsZWFzZS5pc19zZXQoKToKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgYXdhaXQgc2VsZi5yZWxlYXNlLndhaXQoKQogICAgICAgICAgICBleGNlcHQgYXN5bmNpby5DYW5jZWxsZWRFcnJvcjoKICAgICAgICAgICAgICAgIHNlbGYuY2FuY2VsbGF0aW9uX3JlcXVlc3RzICs9IDEKICAgICAgICAjIERldGVybWluaXN0aWMgdGVhcmRvd24ga2VlcHMgYSBmYWlsaW5nIHRlc3QgZnJvbSBsZWFraW5nIGl0cyB0YXNrLgogICAgICAgIHJhaXNlIGFzeW5jaW8uQ2FuY2VsbGVkRXJyb3IKCgpjbGFzcyBGcmFtZVByb2Nlc3NvckNsZWFudXBSZWdyZXNzaW9uKHVuaXR0ZXN0Lklzb2xhdGVkQXN5bmNpb1Rlc3RDYXNlKToKICAgIGFzeW5jIGRlZiB0ZXN0X2NsZWFudXBfaXNfYm91bmRlZF93aGVuX2ludGVybmFsX3Rhc2tfc3dhbGxvd3NfY2FuY2VsbGF0aW9uKHNlbGYpOgogICAgICAgIG1hbmFnZXIgPSBUYXNrTWFuYWdlcigpCiAgICAgICAgcHJvY2Vzc29yID0gQ2FuY2VsbGF0aW9uUmVzaXN0YW50UHJvY2Vzc29yKCkKICAgICAgICBhd2FpdCBwcm9jZXNzb3Iuc2V0dXAoZnJhbWVfcHJvY2Vzc29yX3NldHVwKG1hbmFnZXIpKQogICAgICAgIGNsZWFudXAgPSBOb25lCiAgICAgICAgdHJ5OgogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucXVldWVfZnJhbWUoU3RhcnRGcmFtZSgpKQogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucXVldWVfZnJhbWUoVGV4dEZyYW1lKCJjYW5jZWxsYXRpb24tcmVzaXN0YW50IG9wZXJhdGlvbiIpKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLndhaXRfZm9yKHByb2Nlc3Nvci5lbnRlcmVkLndhaXQoKSwgdGltZW91dD0yKQogICAgICAgICAgICBjbGVhbnVwID0gYXN5bmNpby5jcmVhdGVfdGFzayhwcm9jZXNzb3IuY2xlYW51cCgpKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLndhaXQoe2NsZWFudXB9LCB0aW1lb3V0PTEuNCkKICAgICAgICAgICAgc2VsZi5hc3NlcnRUcnVlKAogICAgICAgICAgICAgICAgY2xlYW51cC5kb25lKCksCiAgICAgICAgICAgICAgICAiRnJhbWVQcm9jZXNzb3IuY2xlYW51cCBleGNlZWRlZCB0aGUgaW50ZXJuYWwgcHJvY2VzcyBjYW5jZWxsYXRpb24gIgogICAgICAgICAgICAgICAgZiJkZWFkbGluZSB3aGlsZSBpdHMgY2hpbGQgc3dhbGxvd2VkIHtwcm9jZXNzb3IuY2FuY2VsbGF0aW9uX3JlcXVlc3RzfSAiCiAgICAgICAgICAgICAgICAiY2FuY2VsbGF0aW9uIHJlcXVlc3RzIiwKICAgICAgICAgICAgKQogICAgICAgICAgICBhd2FpdCBjbGVhbnVwCiAgICAgICAgICAgIHNlbGYuYXNzZXJ0R3JlYXRlcihwcm9jZXNzb3IuY2FuY2VsbGF0aW9uX3JlcXVlc3RzLCAwKQogICAgICAgICAgICBzZWxmLmFzc2VydFRydWUoCiAgICAgICAgICAgICAgICBtYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwKICAgICAgICAgICAgICAgICJBIHN0aWxsLXBlbmRpbmcgaW50ZXJuYWwgdGFzayBtdXN0IHJldGFpbiBhIFRhc2tNYW5hZ2VyIG93bmVyIiwKICAgICAgICAgICAgKQogICAgICAgIGZpbmFsbHk6CiAgICAgICAgICAgIHByb2Nlc3Nvci5yZWxlYXNlLnNldCgpCiAgICAgICAgICAgIGlmIGNsZWFudXAgaXMgbm90IE5vbmU6CiAgICAgICAgICAgICAgICBhd2FpdCBjbGVhbnVwCiAgICAgICAgICAgIGVsc2U6CiAgICAgICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IuY2xlYW51cCgpCiAgICAgICAgICAgIGF3YWl0IGFzeW5jaW8uc2xlZXAoMCkKICAgICAgICAgICAgc2VsZi5hc3NlcnRFcXVhbChtYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwgW10pCgoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIHVuaXR0ZXN0Lm1haW4odmVyYm9zaXR5PTIpCg==
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE'
+          import base64, os
+          from pathlib import Path
+          target = Path(os.environ["RUNNER_TEMP"]) / "pipecat_cleanup_regression.py"
+          target.write_bytes(base64.b64decode(os.environ["DIAGNOSTIC_B64"], validate=True))
+          PYCODE
+          PYTHONPATH="$PWD:$PWD/src" timeout 30s uv run --no-sync python "$RUNNER_TEMP/pipecat_cleanup_regression.py"
+      - name: Always verify unchanged actual source
+        if: always()
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b"
+          test "$(git rev-parse 'HEAD^{tree}')" = "d143e2a002a7c159429ab884f9f8fec6143e2b55"
+          git diff HEAD --exit-code

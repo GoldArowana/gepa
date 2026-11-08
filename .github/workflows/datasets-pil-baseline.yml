@@ -15,7 +15,6 @@ jobs:
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_DATASETS_DISABLE_PROGRESS_BARS: "1"
       DO_NOT_TRACK: "1"
-      HF_HOME: ${{ runner.temp }}/datasets-pil-hf-home
       NO_COLOR: "1"
     defaults:
       run:

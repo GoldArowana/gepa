@@ -1,4 +1,4 @@
-name: Pipecat final cleanup R3 candidate validation
+name: Pipecat final cleanup R4 candidate validation
 on:
   push:
     branches: [validation-pipecat-cleanup-owner-20261108]
@@ -17,13 +17,13 @@ jobs:
           - case: candidate
             python: "3.12"
             repo: GoldArowana/pipecat
-            source_sha: bb4960e9d00c0a85f025abaa1f0c6d76ad2f728b
-            source_tree: 7661e7cbfb017659f0ba9fd41b24764c1cc3c8c6
+            source_sha: 37497d8863eed50c68f7c9e01e91c413270c53d1
+            source_tree: d4b4179b994daf3220defe51d99f03345c2d9649
           - case: candidate
             python: "3.11"
             repo: GoldArowana/pipecat
-            source_sha: bb4960e9d00c0a85f025abaa1f0c6d76ad2f728b
-            source_tree: 7661e7cbfb017659f0ba9fd41b24764c1cc3c8c6
+            source_sha: 37497d8863eed50c68f7c9e01e91c413270c53d1
+            source_tree: d4b4179b994daf3220defe51d99f03345c2d9649
     defaults:
       run:
         working-directory: source

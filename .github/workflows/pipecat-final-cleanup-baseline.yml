@@ -1,44 +1,68 @@
-name: Pipecat final cleanup expected-value baseline
+name: Pipecat final cleanup paired validation
 on:
   push:
     branches: [validation-pipecat-cleanup-owner-20261108]
 permissions:
   contents: read
 jobs:
-  baseline:
+  validation:
+    name: ${{ matrix.case }} Python ${{ matrix.python }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
-        python-version: ["3.12", "3.11"]
+        include:
+          - case: base
+            python: "3.12"
+            repo: pipecat-ai/pipecat
+            source_sha: 3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b
+            source_tree: d143e2a002a7c159429ab884f9f8fec6143e2b55
+          - case: base
+            python: "3.11"
+            repo: pipecat-ai/pipecat
+            source_sha: 3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b
+            source_tree: d143e2a002a7c159429ab884f9f8fec6143e2b55
+          - case: candidate
+            python: "3.12"
+            repo: GoldArowana/pipecat
+            source_sha: 6120b88d4954f1bd4d98b9de31861b1c191693da
+            source_tree: 118b88d84416f3ffacf207c8f05d337de81fde6b
+          - case: candidate
+            python: "3.11"
+            repo: GoldArowana/pipecat
+            source_sha: 6120b88d4954f1bd4d98b9de31861b1c191693da
+            source_tree: 118b88d84416f3ffacf207c8f05d337de81fde6b
     defaults:
       run:
         working-directory: source
     env:
       UV_NO_CACHE: "1"
+      SOURCE_REPO: ${{ matrix.repo }}
+      SOURCE_SHA: ${{ matrix.source_sha }}
+      SOURCE_TREE: ${{ matrix.source_tree }}
     steps:
-      - name: Checkout exact upstream source
+      - name: Checkout exact asserted source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: pipecat-ai/pipecat
-          ref: 3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.source_sha }}
           path: source
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           enable-cache: false
       - name: Assert actual source identity
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b"
-          test "$(git rev-parse 'HEAD^{tree}')" = "d143e2a002a7c159429ab884f9f8fec6143e2b55"
-          printf 'Source repository pipecat-ai/pipecat\nEvent commit %s\n' "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          printf 'Source repository %s\nSource commit %s\nSource tree %s\nCI event %s\n' "$SOURCE_REPO" "$SOURCE_SHA" "$SOURCE_TREE" "$GITHUB_SHA"
           python --version
           uv --version
           git diff HEAD --exit-code
@@ -47,23 +71,32 @@ jobs:
       - name: Verify bootstrap preserves tracked source
         run: git diff HEAD --exit-code
       - name: Run existing TaskManager tests
-        run: uv run --no-sync python -m pytest tests/test_task_manager.py
-      - name: Require bounded final internal-task cleanup
+        run: uv run --no-sync python -m pytest -n 0 tests/test_task_manager.py
+      - name: Run identical expected-value public cleanup regression
         env:
-          DIAGNOSTIC_B64: IiIiUHVibGljIGxpZmVjeWNsZSByZWdyZXNzaW9uLCBleGVjdXRlZCBhZ2FpbnN0IHRoZSBhc3NlcnRlZCBQaXBlY2F0IHNvdXJjZS4iIiIKCmltcG9ydCBhc3luY2lvCmltcG9ydCB1bml0dGVzdAoKZnJvbSBwaXBlY2F0LmZyYW1lcy5mcmFtZXMgaW1wb3J0IFN0YXJ0RnJhbWUsIFRleHRGcmFtZQpmcm9tIHBpcGVjYXQucHJvY2Vzc29ycy5mcmFtZV9wcm9jZXNzb3IgaW1wb3J0IEZyYW1lUHJvY2Vzc29yCmZyb20gcGlwZWNhdC51dGlscy5hc3luY2lvLnRhc2tfbWFuYWdlciBpbXBvcnQgVGFza01hbmFnZXIKZnJvbSB0ZXN0cy5mcmFtZV9wcm9jZXNzb3JfaGVscGVycyBpbXBvcnQgZnJhbWVfcHJvY2Vzc29yX3NldHVwCgoKY2xhc3MgQ2FuY2VsbGF0aW9uUmVzaXN0YW50UHJvY2Vzc29yKEZyYW1lUHJvY2Vzc29yKToKICAgIGRlZiBfX2luaXRfXyhzZWxmKToKICAgICAgICBzdXBlcigpLl9faW5pdF9fKCkKICAgICAgICBzZWxmLmVudGVyZWQgPSBhc3luY2lvLkV2ZW50KCkKICAgICAgICBzZWxmLnJlbGVhc2UgPSBhc3luY2lvLkV2ZW50KCkKICAgICAgICBzZWxmLmNhbmNlbGxhdGlvbl9yZXF1ZXN0cyA9IDAKCiAgICBhc3luYyBkZWYgcHJvY2Vzc19mcmFtZShzZWxmLCBmcmFtZSwgZGlyZWN0aW9uKToKICAgICAgICBhd2FpdCBzdXBlcigpLnByb2Nlc3NfZnJhbWUoZnJhbWUsIGRpcmVjdGlvbikKICAgICAgICBpZiBub3QgaXNpbnN0YW5jZShmcmFtZSwgVGV4dEZyYW1lKToKICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgc2VsZi5lbnRlcmVkLnNldCgpCiAgICAgICAgd2hpbGUgbm90IHNlbGYucmVsZWFzZS5pc19zZXQoKToKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgYXdhaXQgc2VsZi5yZWxlYXNlLndhaXQoKQogICAgICAgICAgICBleGNlcHQgYXN5bmNpby5DYW5jZWxsZWRFcnJvcjoKICAgICAgICAgICAgICAgIHNlbGYuY2FuY2VsbGF0aW9uX3JlcXVlc3RzICs9IDEKICAgICAgICAjIERldGVybWluaXN0aWMgdGVhcmRvd24ga2VlcHMgYSBmYWlsaW5nIHRlc3QgZnJvbSBsZWFraW5nIGl0cyB0YXNrLgogICAgICAgIHJhaXNlIGFzeW5jaW8uQ2FuY2VsbGVkRXJyb3IKCgpjbGFzcyBGcmFtZVByb2Nlc3NvckNsZWFudXBSZWdyZXNzaW9uKHVuaXR0ZXN0Lklzb2xhdGVkQXN5bmNpb1Rlc3RDYXNlKToKICAgIGFzeW5jIGRlZiB0ZXN0X2NsZWFudXBfaXNfYm91bmRlZF93aGVuX2ludGVybmFsX3Rhc2tfc3dhbGxvd3NfY2FuY2VsbGF0aW9uKHNlbGYpOgogICAgICAgIG1hbmFnZXIgPSBUYXNrTWFuYWdlcigpCiAgICAgICAgcHJvY2Vzc29yID0gQ2FuY2VsbGF0aW9uUmVzaXN0YW50UHJvY2Vzc29yKCkKICAgICAgICBhd2FpdCBwcm9jZXNzb3Iuc2V0dXAoZnJhbWVfcHJvY2Vzc29yX3NldHVwKG1hbmFnZXIpKQogICAgICAgIGNsZWFudXAgPSBOb25lCiAgICAgICAgdHJ5OgogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucXVldWVfZnJhbWUoU3RhcnRGcmFtZSgpKQogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucXVldWVfZnJhbWUoVGV4dEZyYW1lKCJjYW5jZWxsYXRpb24tcmVzaXN0YW50IG9wZXJhdGlvbiIpKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLndhaXRfZm9yKHByb2Nlc3Nvci5lbnRlcmVkLndhaXQoKSwgdGltZW91dD0yKQogICAgICAgICAgICBjbGVhbnVwID0gYXN5bmNpby5jcmVhdGVfdGFzayhwcm9jZXNzb3IuY2xlYW51cCgpKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLndhaXQoe2NsZWFudXB9LCB0aW1lb3V0PTEuNCkKICAgICAgICAgICAgc2VsZi5hc3NlcnRUcnVlKAogICAgICAgICAgICAgICAgY2xlYW51cC5kb25lKCksCiAgICAgICAgICAgICAgICAiRnJhbWVQcm9jZXNzb3IuY2xlYW51cCBleGNlZWRlZCB0aGUgaW50ZXJuYWwgcHJvY2VzcyBjYW5jZWxsYXRpb24gIgogICAgICAgICAgICAgICAgZiJkZWFkbGluZSB3aGlsZSBpdHMgY2hpbGQgc3dhbGxvd2VkIHtwcm9jZXNzb3IuY2FuY2VsbGF0aW9uX3JlcXVlc3RzfSAiCiAgICAgICAgICAgICAgICAiY2FuY2VsbGF0aW9uIHJlcXVlc3RzIiwKICAgICAgICAgICAgKQogICAgICAgICAgICBhd2FpdCBjbGVhbnVwCiAgICAgICAgICAgIHNlbGYuYXNzZXJ0R3JlYXRlcihwcm9jZXNzb3IuY2FuY2VsbGF0aW9uX3JlcXVlc3RzLCAwKQogICAgICAgICAgICBzZWxmLmFzc2VydFRydWUoCiAgICAgICAgICAgICAgICBtYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwKICAgICAgICAgICAgICAgICJBIHN0aWxsLXBlbmRpbmcgaW50ZXJuYWwgdGFzayBtdXN0IHJldGFpbiBhIFRhc2tNYW5hZ2VyIG93bmVyIiwKICAgICAgICAgICAgKQogICAgICAgIGZpbmFsbHk6CiAgICAgICAgICAgIHByb2Nlc3Nvci5yZWxlYXNlLnNldCgpCiAgICAgICAgICAgIGlmIGNsZWFudXAgaXMgbm90IE5vbmU6CiAgICAgICAgICAgICAgICBhd2FpdCBjbGVhbnVwCiAgICAgICAgICAgIGVsc2U6CiAgICAgICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IuY2xlYW51cCgpCiAgICAgICAgICAgIGF3YWl0IGFzeW5jaW8uc2xlZXAoMCkKICAgICAgICAgICAgc2VsZi5hc3NlcnRFcXVhbChtYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwgW10pCgoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIHVuaXR0ZXN0Lm1haW4odmVyYm9zaXR5PTIpCg==
+          DIAGNOSTIC_B64: IiIiUHVibGljIGxpZmVjeWNsZSByZWdyZXNzaW9uLCBleGVjdXRlZCBhZ2FpbnN0IHRoZSBhc3NlcnRlZCBQaXBlY2F0IHNvdXJjZS4iIiIKCmltcG9ydCBhc3luY2lvCmltcG9ydCB1bml0dGVzdAoKZnJvbSBwaXBlY2F0LmZyYW1lcy5mcmFtZXMgaW1wb3J0IFN0YXJ0RnJhbWUsIFRleHRGcmFtZQpmcm9tIHBpcGVjYXQucHJvY2Vzc29ycy5mcmFtZV9wcm9jZXNzb3IgaW1wb3J0IEZyYW1lUHJvY2Vzc29yCmZyb20gcGlwZWNhdC51dGlscy5hc3luY2lvLnRhc2tfbWFuYWdlciBpbXBvcnQgVGFza01hbmFnZXIKZnJvbSB0ZXN0cy5mcmFtZV9wcm9jZXNzb3JfaGVscGVycyBpbXBvcnQgZnJhbWVfcHJvY2Vzc29yX3NldHVwCgoKY2xhc3MgQ2FuY2VsbGF0aW9uUmVzaXN0YW50UHJvY2Vzc29yKEZyYW1lUHJvY2Vzc29yKToKICAgIGRlZiBfX2luaXRfXyhzZWxmKToKICAgICAgICBzdXBlcigpLl9faW5pdF9fKCkKICAgICAgICBzZWxmLmVudGVyZWQgPSBhc3luY2lvLkV2ZW50KCkKICAgICAgICBzZWxmLnJlbGVhc2UgPSBhc3luY2lvLkV2ZW50KCkKICAgICAgICBzZWxmLmNhbmNlbGxhdGlvbl9yZXF1ZXN0cyA9IDAKCiAgICBhc3luYyBkZWYgcHJvY2Vzc19mcmFtZShzZWxmLCBmcmFtZSwgZGlyZWN0aW9uKToKICAgICAgICBhd2FpdCBzdXBlcigpLnByb2Nlc3NfZnJhbWUoZnJhbWUsIGRpcmVjdGlvbikKICAgICAgICBpZiBub3QgaXNpbnN0YW5jZShmcmFtZSwgVGV4dEZyYW1lKToKICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgc2VsZi5lbnRlcmVkLnNldCgpCiAgICAgICAgd2hpbGUgbm90IHNlbGYucmVsZWFzZS5pc19zZXQoKToKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgYXdhaXQgc2VsZi5yZWxlYXNlLndhaXQoKQogICAgICAgICAgICBleGNlcHQgYXN5bmNpby5DYW5jZWxsZWRFcnJvcjoKICAgICAgICAgICAgICAgIHNlbGYuY2FuY2VsbGF0aW9uX3JlcXVlc3RzICs9IDEKICAgICAgICAjIERldGVybWluaXN0aWMgdGVhcmRvd24ga2VlcHMgYSBmYWlsaW5nIHRlc3QgZnJvbSBsZWFraW5nIGl0cyB0YXNrLgogICAgICAgIHJhaXNlIGFzeW5jaW8uQ2FuY2VsbGVkRXJyb3IKCgpjbGFzcyBGcmFtZVByb2Nlc3NvckNsZWFudXBSZWdyZXNzaW9uKHVuaXR0ZXN0Lklzb2xhdGVkQXN5bmNpb1Rlc3RDYXNlKToKICAgIGFzeW5jIGRlZiB0ZXN0X2NsZWFudXBfaXNfYm91bmRlZF93aGVuX2ludGVybmFsX3Rhc2tfc3dhbGxvd3NfY2FuY2VsbGF0aW9uKHNlbGYpOgogICAgICAgIG1hbmFnZXIgPSBUYXNrTWFuYWdlcigpCiAgICAgICAgcHJvY2Vzc29yID0gQ2FuY2VsbGF0aW9uUmVzaXN0YW50UHJvY2Vzc29yKCkKICAgICAgICBhd2FpdCBwcm9jZXNzb3Iuc2V0dXAoZnJhbWVfcHJvY2Vzc29yX3NldHVwKG1hbmFnZXIpKQogICAgICAgIGNsZWFudXAgPSBOb25lCiAgICAgICAgdHJ5OgogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucXVldWVfZnJhbWUoU3RhcnRGcmFtZSgpKQogICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IucXVldWVfZnJhbWUoVGV4dEZyYW1lKCJjYW5jZWxsYXRpb24tcmVzaXN0YW50IG9wZXJhdGlvbiIpKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLndhaXRfZm9yKHByb2Nlc3Nvci5lbnRlcmVkLndhaXQoKSwgdGltZW91dD0yKQogICAgICAgICAgICBjbGVhbnVwID0gYXN5bmNpby5jcmVhdGVfdGFzayhwcm9jZXNzb3IuY2xlYW51cCgpKQogICAgICAgICAgICBhd2FpdCBhc3luY2lvLndhaXQoe2NsZWFudXB9LCB0aW1lb3V0PTEuNCkKICAgICAgICAgICAgc2VsZi5hc3NlcnRUcnVlKAogICAgICAgICAgICAgICAgY2xlYW51cC5kb25lKCksCiAgICAgICAgICAgICAgICAiRnJhbWVQcm9jZXNzb3IuY2xlYW51cCBleGNlZWRlZCB0aGUgaW50ZXJuYWwgcHJvY2VzcyBjYW5jZWxsYXRpb24gIgogICAgICAgICAgICAgICAgZiJkZWFkbGluZSB3aGlsZSBpdHMgY2hpbGQgc3dhbGxvd2VkIHtwcm9jZXNzb3IuY2FuY2VsbGF0aW9uX3JlcXVlc3RzfSAiCiAgICAgICAgICAgICAgICAiY2FuY2VsbGF0aW9uIHJlcXVlc3RzIiwKICAgICAgICAgICAgKQogICAgICAgICAgICBhd2FpdCBjbGVhbnVwCiAgICAgICAgICAgIHNlbGYuYXNzZXJ0R3JlYXRlcihwcm9jZXNzb3IuY2FuY2VsbGF0aW9uX3JlcXVlc3RzLCAwKQogICAgICAgICAgICBzZWxmLmFzc2VydFRydWUoCiAgICAgICAgICAgICAgICBtYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwKICAgICAgICAgICAgICAgICJBIHN0aWxsLXBlbmRpbmcgaW50ZXJuYWwgdGFzayBtdXN0IHJldGFpbiBhIFRhc2tNYW5hZ2VyIG93bmVyIiwKICAgICAgICAgICAgKQogICAgICAgIGZpbmFsbHk6CiAgICAgICAgICAgIHByb2Nlc3Nvci5yZWxlYXNlLnNldCgpCiAgICAgICAgICAgIGlmIGNsZWFudXAgaXMgbm90IE5vbmU6CiAgICAgICAgICAgICAgICBhd2FpdCBjbGVhbnVwCiAgICAgICAgICAgIGVsc2U6CiAgICAgICAgICAgICAgICBhd2FpdCBwcm9jZXNzb3IuY2xlYW51cCgpCiAgICAgICAgICAgIGF3YWl0IGFzeW5jaW8uZ2F0aGVyKCptYW5hZ2VyLmN1cnJlbnRfdGFza3MoKSwgcmV0dXJuX2V4Y2VwdGlvbnM9VHJ1ZSkKICAgICAgICAgICAgYXdhaXQgYXN5bmNpby5zbGVlcCgwKQogICAgICAgICAgICBzZWxmLmFzc2VydEVxdWFsKG1hbmFnZXIuY3VycmVudF90YXNrcygpLCBbXSkKCgppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOgogICAgdW5pdHRlc3QubWFpbih2ZXJib3NpdHk9MikK
         run: |
           set -euo pipefail
           python - <<'PYCODE'
-          import base64, os
+          import base64, os, hashlib
           from pathlib import Path
-          target = Path(os.environ["RUNNER_TEMP"]) / "pipecat_cleanup_regression.py"
-          target.write_bytes(base64.b64decode(os.environ["DIAGNOSTIC_B64"], validate=True))
+          data = base64.b64decode(os.environ["DIAGNOSTIC_B64"], validate=True)
+          assert hashlib.sha256(data).hexdigest() == "1fbbd4666248cc5d656958a7ca41ac62ada2add0cfa9394d064cbd12dcc9cef7"
+          (Path(os.environ["RUNNER_TEMP"]) / "pipecat_cleanup_regression.py").write_bytes(data)
           PYCODE
           PYTHONPATH="$PWD:$PWD/src" timeout 30s uv run --no-sync python "$RUNNER_TEMP/pipecat_cleanup_regression.py"
-      - name: Always verify unchanged actual source
+      - name: Run existing and focused processor lifecycle tests
+        if: matrix.case == 'candidate'
+        run: uv run --no-sync python -m pytest -n 0 tests/test_frame_processor.py tests/test_frame_processor_cleanup.py
+      - name: Check candidate source and test lint
+        if: matrix.case == 'candidate'
+        run: |
+          uv run --no-sync ruff check src/pipecat/processors/frame_processor.py tests/test_frame_processor_cleanup.py
+          uv run --no-sync ruff format --check --diff src/pipecat/processors/frame_processor.py tests/test_frame_processor_cleanup.py
+      - name: Always verify unchanged asserted source
         if: always()
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "3dbb0c8445c0ddc2276d566140fe8d12f1d61e5b"
-          test "$(git rev-parse 'HEAD^{tree}')" = "d143e2a002a7c159429ab884f9f8fec6143e2b55"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
           git diff HEAD --exit-code

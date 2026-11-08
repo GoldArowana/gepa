@@ -1,0 +1,75 @@
+name: GEPA agent state lineage presubmit
+run-name: GEPA agent lineage candidate b2f575e5
+
+on:
+  push:
+    branches:
+      - codex-ci/gepa-agent-lineage-20261109-b2f575e5
+
+permissions:
+  contents: read
+
+jobs:
+  presubmit:
+    if: >-
+      github.repository == 'GoldArowana/gepa' &&
+      github.ref == 'refs/heads/codex-ci/gepa-agent-lineage-20261109-b2f575e5'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EXPECTED_HEAD: b2f575e5af64c71898b03739ce0b51b31816f6d1
+      EXPECTED_TREE: 61d702eefb367c35915656333cdbc64f69658cc4
+      UV_NO_CACHE: '1'
+      PRE_COMMIT_HOME: /tmp/gepa-agent-lineage-precommit
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: GoldArowana/gepa
+          ref: b2f575e5af64c71898b03739ce0b51b31816f6d1
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Assert source repository and exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'GoldArowana/gepa'
+          source_url=$(git remote get-url origin)
+          test "${source_url%.git}" = 'https://github.com/GoldArowana/gepa'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
+          git diff HEAD --exit-code
+          printf 'source_repo=%s source_head=%s source_tree=%s event_head=%s upstream_base=cb7674c8b231270134b8e5ea8b9db1a62ed8d081\n' \
+            "$GITHUB_REPOSITORY" "$EXPECTED_HEAD" "$EXPECTED_TREE" "$GITHUB_SHA"
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          enable-cache: false
+      - name: Install locked development dependencies
+        run: |
+          uv sync --locked --extra dev --python 3.11
+          git diff HEAD --exit-code
+      - name: Run pinned applicable pre-commit hooks
+        run: >
+          uv run --no-sync pre-commit run --show-diff-on-failure --files
+          src/gepa/core/state.py tests/test_agent_state_lineage.py
+      - name: Run configured Pyright
+        run: uv run --no-sync pyright
+      - name: Run focused offline GEPA tests
+        run: >
+          uv run --no-sync pytest -q -p no:cacheprovider -m 'not llm_live and not extra'
+          -k 'not test_e2e_resume_run'
+          tests/test_state.py tests/test_multi_proposal_invariants.py tests/test_agent_state_lineage.py
+      - name: Verify candidate source stayed clean
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
+          git diff HEAD --exit-code
+          printf 'verified_final_head=%s verified_final_tree=%s\n' "$EXPECTED_HEAD" "$EXPECTED_TREE"

@@ -47,7 +47,7 @@ jobs:
       - name: Install locked focused dependencies
         working-directory: source
         run: |
-          uv sync --locked --no-default-groups --group pytest --extra genai --no-cache
+          uv sync --locked --no-default-groups --group pytest --group build --extra genai --no-cache
           uv pip install --no-cache -c requirements/constraints.txt litellm psutil opentelemetry-exporter-otlp-proto-grpc opentelemetry-exporter-otlp-proto-http
           uv run --no-sync python -c 'import sys, sqlite3, mlflow; from importlib.metadata import version; print(sys.version, sqlite3.sqlite_version, mlflow.__file__, {n: version(n) for n in ("sqlalchemy", "alembic", "huey")})'
           git diff HEAD --exit-code

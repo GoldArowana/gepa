@@ -69,7 +69,7 @@ def register_judge(store, experiment_id):
         feedback_value_type=str,
         model="gateway:/fixture-endpoint",
     )
-    store.register_scorer(experiment_id, judge.name, judge.model_dump_json())
+    store.register_scorer(experiment_id, judge.name, json.dumps(judge.model_dump()))
     store.upsert_online_scoring_config(experiment_id, judge.name, 1.0)
     scorers = store.get_active_online_scorers()
     assert [scorer.name for scorer in scorers] == [SCORER_NAME]

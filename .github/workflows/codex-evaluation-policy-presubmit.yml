@@ -1,0 +1,75 @@
+name: GEPA evaluation policy result presubmit
+run-name: GEPA evaluation policy candidate 68660b95
+
+on:
+  push:
+    branches:
+      - codex-ci/gepa-evaluation-policy-20261110-68660b95
+
+permissions:
+  contents: read
+
+jobs:
+  presubmit:
+    if: >-
+      github.repository == 'GoldArowana/gepa' &&
+      github.ref == 'refs/heads/codex-ci/gepa-evaluation-policy-20261110-68660b95'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EXPECTED_HEAD: 68660b95c1929f1061c9b7a2f398435aab9d0d74
+      EXPECTED_TREE: 2dcdeba5f9656cbec8f3c9aa41c115a6ae25e8e3
+      UV_NO_CACHE: '1'
+      PRE_COMMIT_HOME: /tmp/gepa-evaluation-policy-precommit
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: GoldArowana/gepa
+          ref: 68660b95c1929f1061c9b7a2f398435aab9d0d74
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Assert source repository and exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'GoldArowana/gepa'
+          source_url=$(git remote get-url origin)
+          test "${source_url%.git}" = 'https://github.com/GoldArowana/gepa'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
+          git diff HEAD --exit-code
+          printf 'source_repo=%s source_head=%s source_tree=%s event_head=%s upstream_base=ce5b0d6e3d6af6c6dbec6de2c54536bbb961d309\n' \
+            "$GITHUB_REPOSITORY" "$EXPECTED_HEAD" "$EXPECTED_TREE" "$GITHUB_SHA"
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          enable-cache: false
+      - name: Install locked development dependencies
+        run: |
+          uv sync --locked --extra dev --python 3.11
+          git diff HEAD --exit-code
+      - name: Run pinned applicable pre-commit hooks
+        run: >
+          uv run --no-sync pre-commit run --show-diff-on-failure --files
+          src/gepa/api.py src/gepa/core/engine.py src/gepa/core/result.py src/gepa/gepa_launcher.py src/gepa/oa/engines/gepa.py tests/test_result_evaluation_policy.py
+      - name: Run configured Pyright
+        run: uv run --no-sync pyright
+      - name: Run focused offline GEPA tests
+        run: >
+          uv run --no-sync pytest -q -p no:cacheprovider -m 'not llm_live and not extra'
+          -k 'not test_e2e_resume_run'
+          tests/test_result.py tests/test_result_evaluation_policy.py tests/test_incremental_eval_policy.py tests/test_state.py tests/test_optimize_anything_gepa_config.py tests/test_positional_api_order.py tests/test_optimize_positional_compat.py
+      - name: Verify candidate source stayed clean
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
+          git diff HEAD --exit-code
+          printf 'verified_final_head=%s verified_final_tree=%s\n' "$EXPECTED_HEAD" "$EXPECTED_TREE"

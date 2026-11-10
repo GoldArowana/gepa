@@ -1,0 +1,115 @@
+name: Docling rowspan base validation
+on:
+  push:
+    branches: [codex-ci/docling-rowspan-base-6852c27f]
+permissions:
+  contents: read
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      DOCLING_SOURCE_SHA: 6852c27fb87dafaaa1a564545a8ce78d4565b186
+      DOCLING_SOURCE_TREE: df86bbef94567c4b2616d5aac4ad42fe893e4530
+      UV_NO_CACHE: "1"
+    steps:
+      - name: Check out exact upstream source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: docling-project/docling
+          ref: 6852c27fb87dafaaa1a564545a8ce78d4565b186
+          path: tested-source
+          persist-credentials: false
+      - name: Verify source identity
+        working-directory: tested-source
+        run: |
+          set -eu
+          origin="$(git remote get-url origin)"
+          test "${origin%.git}" = https://github.com/docling-project/docling
+          test "$(git rev-parse HEAD)" = "$DOCLING_SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$DOCLING_SOURCE_TREE"
+          git diff HEAD --exit-code
+          printf 'SOURCE repo=docling-project/docling commit=%s tree=%s\n' "$DOCLING_SOURCE_SHA" "$DOCLING_SOURCE_TREE"
+          printf 'EVENT repo=%s commit=%s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          python-version: "3.10"
+          enable-cache: false
+      - name: Install frozen slim format dependencies
+        working-directory: tested-source
+        run: |
+          set -eu
+          uv sync --locked --no-default-groups --extra format-xml-jats
+          git diff HEAD --exit-code
+      - name: Run public HTML and JATS conversion probes
+        working-directory: tested-source
+        run: |
+          set -eu
+          uv run --no-sync python - <<'PY'
+          from importlib.metadata import version
+          from io import BytesIO
+          from pathlib import Path
+          import json
+          import platform
+
+          import docling.document_converter as converter_module
+          from docling.datamodel.base_models import DocumentStream, InputFormat
+          from docling.document_converter import DocumentConverter
+
+          assert Path(converter_module.__file__).resolve().is_relative_to(Path.cwd())
+          print(json.dumps({"python": platform.python_version(), "core": version("docling-core"),
+                            "slim": version("docling-slim"), "source": converter_module.__file__}), flush=True)
+          direct = (
+              '<table><tr><td rowspan="3">A</td><td rowspan="3">B</td></tr>'
+              '<tr><td>C</td></tr><tr><td>D</td></tr></table>'
+          )
+          transitive = direct.replace('<td>C</td>', '<td rowspan="2">C</td>')
+          results = {}
+          for format_id in (InputFormat.HTML, InputFormat.XML_JATS):
+              converter = DocumentConverter(allowed_formats=[format_id])
+              for label, table in (("direct", direct), ("transitive", transitive)):
+                  if format_id is InputFormat.HTML:
+                      name = f"{label}.html"
+                      source = f"<!doctype html><html><body><h1>Fixture</h1>{table}</body></html>"
+                  else:
+                      name = f"{label}.nxml"
+                      source = ('<?xml version="1.0" encoding="UTF-8"?>'
+                                '<!DOCTYPE article PUBLIC "-//NLM//DTD JATS (Z39.96) Journal Archiving and Interchange DTD v1.3 20210610//EN"  "JATS-archivearticle1.dtd">'
+                                '<article xmlns:xlink="http://www.w3.org/1999/xlink">'
+                                '<front><article-meta><title-group><article-title>Fixture</article-title>'
+                                '</title-group></article-meta></front>'
+                                f'<body><sec><title>Table</title><table-wrap id="t1">{table}</table-wrap></sec></body></article>')
+                  result = converter.convert(DocumentStream(name=name, stream=BytesIO(source.encode())))
+                  assert len(result.document.tables) == 1, (format_id.value, label, len(result.document.tables))
+                  item = result.document.tables[0]
+                  data = item.data
+                  bottom_row = [cell.text for cell in data.grid[-1]]
+                  emitted = [(cell.text, cell.start_row_offset_idx, cell.start_col_offset_idx)
+                             for cell in data.table_cells]
+                  results[f"{format_id.value}:{label}"] = {"width": data.num_cols, "bottom": bottom_row,
+                                                            "emitted": emitted}
+          print("DOCLING_GRID_RESULTS=" + json.dumps(results, sort_keys=True), flush=True)
+          for format_id in (InputFormat.HTML, InputFormat.XML_JATS):
+              control = results[f"{format_id.value}:direct"]
+              assert control["width"] == 3 and control["bottom"] == ["A", "B", "D"], control
+          print("DOCLING_DIRECT_CONTROLS=pass", flush=True)
+          mismatches = []
+          for format_id in (InputFormat.HTML, InputFormat.XML_JATS):
+              observed = results[f"{format_id.value}:transitive"]
+              if observed["width"] != 4 or observed["bottom"] != ["A", "B", "C", "D"]:
+                  mismatches.append(format_id.value)
+          print("DOCLING_TRANSITIVE_CONTRACT_MISMATCH=" + json.dumps(mismatches), flush=True)
+          raise SystemExit(bool(mismatches))
+          PY
+      - name: Verify tracked source after validation
+        if: always()
+        working-directory: tested-source
+        run: |
+          set -eu
+          origin="$(git remote get-url origin)"
+          test "${origin%.git}" = https://github.com/docling-project/docling
+          test "$(git rev-parse HEAD)" = "$DOCLING_SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$DOCLING_SOURCE_TREE"
+          git diff HEAD --exit-code
+          echo SOURCE_TRACKED_BYTES_CLEAN=1

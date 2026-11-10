@@ -1,0 +1,73 @@
+name: MLflow SQLite trace scoring pagination boundary
+
+on:
+  push:
+    branches:
+      - validation-mlflow-trace-db1c6f1d
+
+permissions:
+  contents: read
+
+jobs:
+  exact-source:
+    if: github.repository == 'GoldArowana/gepa'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      SOURCE_SHA: af4a5aa5e6c54abf40512aac861693540d700c6f
+      SOURCE_TREE: c414ff193410c6ec572339c533c46eb11ca74a1c
+      UV_NO_PROGRESS: "1"
+      UV_EXCLUDE_NEWER: P7D
+      UV_INDEX_STRATEGY: unsafe-first-match
+      MLFLOW_ENABLE_TELEMETRY: "false"
+    steps:
+      - name: Check out validation fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Check out exact MLflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: mlflow/mlflow
+          ref: af4a5aa5e6c54abf40512aac861693540d700c6f
+          path: source
+          persist-credentials: false
+      - name: Verify source and event identities
+        working-directory: source
+        run: |
+          test "$(git config --get remote.origin.url)" = 'https://github.com/mlflow/mlflow'
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test "$(git -C ../harness rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff HEAD --exit-code
+          printf 'Event %s %s\nSource mlflow/mlflow %s %s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$SOURCE_SHA" "$SOURCE_TREE"
+      - name: Use upstream Python and uv setup
+        uses: ./source/.github/actions/setup-python
+      - name: Install locked focused dependencies
+        working-directory: source
+        run: |
+          uv sync --locked --no-default-groups --group pytest --group build --extra genai --no-cache
+          uv pip install --no-cache -c requirements/constraints.txt litellm psutil opentelemetry-exporter-otlp-proto-grpc opentelemetry-exporter-otlp-proto-http
+          uv run --no-sync python -c 'import sys, sqlite3, mlflow; from importlib.metadata import version; print(sys.version, sqlite3.sqlite_version, mlflow.__file__, {n: version(n) for n in ("sqlalchemy", "alembic", "huey")})'
+          git diff HEAD --exit-code
+      - name: Run trace scoring coverage and persistence boundary
+        working-directory: source
+        run: |
+          test -x .venv/bin/python
+          failed=0
+          for count in 499 500 501; do
+            PYTHONPATH="$PWD" uv run --no-sync python ../harness/.codex-validation/mlflow-trace-db1c6f1d/trace_fixture.py "$count" && result=0 || result=$?
+            printf 'TRACE_CASE_EXIT count=%s code=%s\n' "$count" "$result"
+            if [ "$result" -ne 0 ]; then
+              failed=1
+            fi
+          done
+          exit "$failed"
+      - name: Verify tracked MLflow bytes remained unchanged
+        if: always()
+        working-directory: source
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          git diff HEAD --exit-code

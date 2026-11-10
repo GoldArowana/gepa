@@ -1,0 +1,154 @@
+name: Docling table consumer base validation
+on:
+  push:
+    branches: [codex-ci/docling-span-consumers-3ae893db]
+permissions:
+  contents: read
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      DOCLING_SOURCE_SHA: 6852c27fb87dafaaa1a564545a8ce78d4565b186
+      DOCLING_SOURCE_TREE: df86bbef94567c4b2616d5aac4ad42fe893e4530
+      UV_NO_CACHE: "1"
+    steps:
+      - name: Check out exact upstream source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: docling-project/docling
+          ref: 6852c27fb87dafaaa1a564545a8ce78d4565b186
+          path: tested-source
+          persist-credentials: false
+      - name: Verify source identity
+        working-directory: tested-source
+        run: |
+          set -eu
+          origin="$(git remote get-url origin)"
+          test "${origin%.git}" = https://github.com/docling-project/docling
+          test "$(git rev-parse HEAD)" = "$DOCLING_SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$DOCLING_SOURCE_TREE"
+          git diff HEAD --exit-code
+          printf 'SOURCE repo=docling-project/docling commit=%s tree=%s\n' "$DOCLING_SOURCE_SHA" "$DOCLING_SOURCE_TREE"
+          printf 'EVENT repo=%s commit=%s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          python-version: "3.10"
+          enable-cache: false
+      - name: Install frozen slim format dependencies
+        working-directory: tested-source
+        run: |
+          set -eu
+          uv sync --locked --no-default-groups --extra format-xml-jats
+          git diff HEAD --exit-code
+      - name: Run public HTML, JATS and BoxNote probes
+        working-directory: tested-source
+        run: |
+          set -eu
+          uv run --no-sync python - <<'PY'
+          """Public exact-base probes for table placement and oversized span controls."""
+          from importlib.metadata import version
+          from io import BytesIO
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          import json
+          import platform
+
+          import docling.document_converter as converter_module
+          from docling.datamodel.base_models import DocumentStream, InputFormat
+          from docling.document_converter import DocumentConverter
+
+          assert Path(converter_module.__file__).resolve().is_relative_to(Path.cwd())
+          print(json.dumps({"python": platform.python_version(), "core": version("docling-core"),
+                            "slim": version("docling-slim"), "source": converter_module.__file__}), flush=True)
+
+          DIRECT = """<table><tr><td rowspan="3">A</td><td rowspan="3">B</td></tr>
+          <tr><td>C</td></tr><tr><td>D</td></tr></table>"""
+          COMPOUND_SHIFT = """<table><tr><td rowspan="4">A</td><td rowspan="4">B</td></tr>
+          <tr><td colspan="2" rowspan="2">C</td></tr><tr><td>D</td></tr>
+          <tr><td>E</td><td>F</td></tr></table>"""
+          COMPOUND_CROSSING = """<table><tr><td rowspan="4">A</td><td>B</td></tr>
+          <tr><td colspan="2" rowspan="2">C</td></tr><tr><td>D</td></tr>
+          <tr><td>E</td><td>F</td></tr></table>"""
+          CORRECT_WIDTH = """<table><tr><td rowspan="2">A</td></tr>
+          <tr><td colspan="2">B</td></tr><tr><td colspan="2" rowspan="2">C</td></tr>
+          <tr><td>D</td></tr></table>"""
+          OVERSIZED = """<table><tr><td rowspan="100000000">A</td><td colspan="100000000">B</td></tr>
+          <tr><td>C</td></tr></table>"""
+          LONG_DIGITS = OVERSIZED.replace("100000000", "9" * 5000)
+
+          def html(table):
+              return f"<!doctype html><html><body><h1>Fixture</h1>{table}</body></html>"
+
+          def jats(table):
+              return ('<?xml version="1.0" encoding="UTF-8"?>'
+                      '<!DOCTYPE article PUBLIC "-//NLM//DTD JATS (Z39.96) Journal Archiving and Interchange DTD v1.3 20210610//EN"  "JATS-archivearticle1.dtd">'
+                      '<article xmlns:xlink="http://www.w3.org/1999/xlink">'
+                      '<front><article-meta><title-group><article-title>Fixture</article-title>'
+                      '</title-group></article-meta></front>'
+                      f'<body><sec><title>Table</title><table-wrap id="t1">{table}</table-wrap></sec></body></article>')
+
+          def boxnote(table):
+              rows = []
+              for xml_row in ET.fromstring(table):
+                  cells = []
+                  for cell in xml_row:
+                      cells.append({"type": "table_cell", "attrs": {k: int(v) for k, v in cell.attrib.items()},
+                                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": cell.text}]}]})
+                  rows.append({"type": "table_row", "content": cells})
+              return json.dumps({"doc": {"type": "doc", "content": [{"type": "table", "content": rows}]}})
+
+          formats = [(InputFormat.HTML, "html", html), (InputFormat.XML_JATS, "nxml", jats),
+                     (InputFormat.BOXNOTE, "boxnote", boxnote)]
+          cases = [
+              ("direct", DIRECT, 3, 2, ["A", "B", "D"], True),
+              ("compound_shift", COMPOUND_SHIFT, 5, 2, ["A", "B", "C", "C", "D"], False),
+              ("compound_crossing", COMPOUND_CROSSING, 4, 2, ["A", "C", "C", "D"], False),
+              ("correct_width", CORRECT_WIDTH, 3, 1, ["A", "B", "B"], False),
+              ("oversized", OVERSIZED, 2, 1, ["A", "C"], True),
+              ("long_digits", LONG_DIGITS, 2, 1, ["A", "C"], True),
+          ]
+          mismatches = []
+          control_failures = []
+          results = {}
+          for fmt, ext, encode in formats:
+              converter = DocumentConverter(allowed_formats=[fmt])
+              for label, table, width, row, cells, control in cases:
+                  if label == "long_digits" and fmt is InputFormat.BOXNOTE:
+                      continue
+                  key = f"{fmt.value}:{label}"
+                  result = converter.convert(DocumentStream(name=f"{label}.{ext}", stream=BytesIO(encode(table).encode())))
+                  assert len(result.document.tables) == 1, (key, len(result.document.tables))
+                  data = result.document.tables[0].data
+                  grid = [[cell.text for cell in grid_row] for grid_row in data.grid]
+                  emitted = [(cell.text, cell.start_row_offset_idx, cell.end_row_offset_idx,
+                              cell.start_col_offset_idx, cell.end_col_offset_idx)
+                             for cell in data.table_cells]
+                  bounds = all(0 <= r0 < r1 <= data.num_rows and 0 <= c0 < c1 <= data.num_cols
+                               for _, r0, r1, c0, c1 in emitted)
+                  same = (data.num_cols, grid[row], bounds) == (width, cells, True)
+                  if not same:
+                      (control_failures if control else mismatches).append(key)
+                  results[key] = {"width": data.num_cols, "grid": grid, "emitted": emitted,
+                                  "offsets_in_bounds": bounds, "matches_contract": same, "control": control,
+                                  "expected": {"width": width, "row_index": row, "row": cells}}
+
+          print("DOCLING_CONSUMER_RESULTS=" + json.dumps(results, sort_keys=True), flush=True)
+          print("DOCLING_CONTROL_FAILURES=" + json.dumps(control_failures), flush=True)
+          print("DOCLING_CONTRACT_MISMATCHES=" + json.dumps(mismatches), flush=True)
+          if control_failures:
+              raise SystemExit(3)
+          raise SystemExit(bool(mismatches))
+          PY
+      - name: Verify tracked source after validation
+        if: always()
+        working-directory: tested-source
+        run: |
+          set -eu
+          origin="$(git remote get-url origin)"
+          test "${origin%.git}" = https://github.com/docling-project/docling
+          test "$(git rev-parse HEAD)" = "$DOCLING_SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$DOCLING_SOURCE_TREE"
+          git diff HEAD --exit-code
+          echo SOURCE_TRACKED_BYTES_CLEAN=1

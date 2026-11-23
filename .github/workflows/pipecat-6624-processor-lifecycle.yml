@@ -1,0 +1,84 @@
+name: Pipecat processor lifecycle coverage
+on:
+  push:
+    branches: [validation-pipecat-6624-tests-8a18d149]
+permissions:
+  contents: read
+jobs:
+  processor-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    env:
+      SOURCE_REPO: GoldArowana/pipecat
+      SOURCE_SHA: eec5c11435abcc02af66edbe34128cc205343e6f
+      SOURCE_TREE: 7f6cfe880bf1251779ba7de7d8e2b4fb6752f46f
+      SOURCE_FRAME_BLOB: 6f569e891dcfa69b7bcc28b0076e39300994baf5
+      UV_NO_CACHE: "1"
+    steps:
+      - name: Checkout exact candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: GoldArowana/pipecat
+          ref: eec5c11435abcc02af66edbe34128cc205343e6f
+          path: source
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          enable-cache: false
+      - name: Confirm source identity and frozen helper environment
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          test "$(git rev-parse 'HEAD:src/pipecat/processors/frame_processor.py')" = "$SOURCE_FRAME_BLOB"
+          git diff HEAD --exit-code
+          printf 'SOURCE_REPOSITORY=%s\nSOURCE_HEAD=%s\nSOURCE_TREE=%s\nEVENT_HEAD=%s\n' "$SOURCE_REPO" "$SOURCE_SHA" "$SOURCE_TREE" "$GITHUB_SHA"
+          python --version
+          uv --version
+          uv sync --frozen --group dev
+          git diff HEAD --exit-code
+      - name: Check changed test files
+        run: |
+          uv run --no-sync ruff check tests/test_frame_processor_cleanup.py tests/test_frame_processor_setup_lifecycle.py
+          uv run --no-sync ruff format --check tests/test_frame_processor_cleanup.py tests/test_frame_processor_setup_lifecycle.py
+      - name: Run focused observer and readiness coverage
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/pipecat-6624-coverage
+        run: |
+          uv run --no-sync python -m pytest -n 0 \
+            tests/test_frame_processor_cleanup.py::TestFrameProcessorCleanup::test_cleanup_in_observer_prevents_delivery_and_after_hook \
+            tests/test_frame_processor_setup_lifecycle.py::TestFrameProcessorSetupLifecycle::test_direct_start_waits_for_setup_and_is_dropped_on_cleanup \
+            --cov=pipecat.processors.frame_processor --cov-report="json:$RUNNER_TEMP/pipecat-6624-coverage.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "pipecat-6624-coverage.json").read_text())
+          rows = [row for name, row in report["files"].items() if name.endswith("pipecat/processors/frame_processor.py")]
+          assert len(rows) == 1
+          wanted = {924, 1446}
+          assert wanted <= set(rows[0]["executed_lines"]), wanted - set(rows[0]["executed_lines"])
+          print("EXACT_PROCESSOR_LINES_EXECUTED=924,1446")
+          PY
+      - name: Run related frame processor and task manager suite
+        run: |
+          uv run --no-sync python -m pytest -n 0 \
+            tests/test_frame_processor.py tests/test_frame_processor_cleanup.py \
+            tests/test_frame_processor_setup_lifecycle.py tests/test_task_manager.py
+      - name: Always verify candidate source and tracked bytes
+        if: always()
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git diff HEAD --exit-code
